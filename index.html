@@ -442,7 +442,31 @@
       font-size: 0.82rem;
       font-weight: 500;
     }
+.nosotros-img-main,
+.nosotros-img-secondary {
+  width: 100%;
+  border-radius: 20px;
+  overflow: hidden;
+}
 
+.nosotros-img-main {
+  aspect-ratio: 4/5; /* 🔥 mismo estilo que el hero */
+}
+
+.nosotros-img-secondary {
+  aspect-ratio: 1/1; /* cuadrada queda mejor para secundaria */
+  margin-top: 12px;
+  
+}
+
+.nosotros-img-main img,
+.nosotros-img-secondary img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;       /* 🔥 no se deforma */
+  object-position: center; /* centrado */
+  display: block;
+}
     /* ── SERVICIOS ── */
     #servicios {
       background: var(--crema);
@@ -812,7 +836,7 @@
 </div>
 
 <div class="nosotros-img-secondary">
-  <img src="https://i.ibb.co/VfmYC5R/Dra-Bruzera-inicio-banner-PC.png" alt="Mascota">
+  <img src="https://i.ibb.co/XxbWKJzS/Logo-Dra-Bruzera.png" alt="Mascota">
 </div>
     </div>
     <div class="nosotros-text fade-up">
@@ -876,10 +900,10 @@
   <div class="section-label">Turnos online</div>
   <h2 class="section-title">Sacá tu turno <em>en segundos</em></h2>
   <p class="section-sub">Sin llamadas, sin esperas. Elegí el día y horario que mejor te quede y confirmá todo desde tu celular.</p>
-  <a href="https://bruzera.turnox.pro/" class="turnos-btn">
+  <a href="https://bruzera.turnox.pro/turnero.html" class="turnos-btn">
     Reservar turno ahora <span class="arrow">→</span>
   </a>
-  <p class="turnos-note">Lunes a viernes 17:30 – 20:00 · Sábados 10:00 – 12:00</p>
+  <p class="turnos-note">Lunes a viernes 17:30 – 20:30 · Sábados 10:00 – 13:00</p>
 </section>
 
 <!-- CONTACTO -->
@@ -894,21 +918,21 @@
           <div class="contacto-item-icon">📍</div>
           <div class="contacto-item-text">
             <strong>Dirección</strong>
-            <span>Tu dirección aquí, ciudad</span>
+            <span>José Venturino 1239, Paraná</span>
           </div>
         </div>
         <div class="contacto-item">
           <div class="contacto-item-icon">📞</div>
           <div class="contacto-item-text">
             <strong>WhatsApp</strong>
-            <span>+54 343 447-7577</span>
+            <span>+54 343 5303848</span>
           </div>
         </div>
         <div class="contacto-item">
           <div class="contacto-item-icon">🕐</div>
           <div class="contacto-item-text">
             <strong>Horario de atención</strong>
-            <span>Lun–Vie 17:30–20:00 · Sáb 10:00–12:00</span>
+            <span>Lun–Vie 17:30–20:30 · Sáb 10:00–13:00</span>
           </div>
         </div>
       </div>
@@ -919,18 +943,18 @@
       <div class="horarios">
         <div class="horario-row">
           <span class="dia">Lunes a viernes</span>
-          <span class="hora">17:30 – 20:00</span>
+          <span class="hora">17:30 – 20:30</span>
         </div>
         <div class="horario-row">
           <span class="dia">Sábados</span>
-          <span class="hora">10:00 – 12:00</span>
+          <span class="hora">10:00 – 13:00</span>
         </div>
         <div class="horario-row cerrado">
           <span class="dia">Domingos</span>
           <span class="hora">Cerrado</span>
         </div>
       </div>
-      <a href="https://wa.me/543434477577?text=Hola%20Dra.%20Bruzera%2C%20tengo%20una%20consulta!" class="btn-whatsapp">
+      <a href="https://wa.me/5435303848?text=Hola%20Dra.%20Bruzera%2C%20tengo%20una%20consulta!" class="btn-whatsapp">
         💬 Escribir por WhatsApp
       </a>
     </div>
