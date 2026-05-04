@@ -5,22 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
 <link rel="icon" href="https://i.ibb.co/hFyg48KD/Logo-Dra-Bruzera.png" href="favicon.png">
 <!-- O para .ico -->
 
    <link rel="icon" href="https://i.ibb.co/hFyg48KD/Logo-Dra-Bruzera.png" type="image/png">
-  <title>Hitorial Médico</title>
+  <title>Panel veterinario — Dra. Lili Bruzera</title>
   <style>
 html {
   scroll-behavior: smooth;
 }
     /* ======== ESTILOS GENERALES ======== */
     body {
-      font-family: "Montserrat", sans-serif;
+      font-family: 'DM Sans', sans-serif;
   font-optical-sizing: auto;
-  font-weight: <weight>;
+  font-weight: 400;
   font-style: normal;
       background: #f4f6f9;
       margin: 0;
@@ -44,9 +44,9 @@ html {
 }
 
 #fechaTurno {
-  font-family: font-family: "Montserrat", sans-serif;
+  font-family: 'DM Sans', sans-serif;
   font-optical-sizing: auto;
-  font-weight: <weight>;
+  font-weight: 400;
   font-style: normal;
 }
 #inputBusquedaGeneral {
@@ -54,7 +54,7 @@ html {
 }
 
 #inputBusquedaGeneral:focus {
-  background-color: ##EDEDED !important; /* color cuando está enfocado */
+  background-color: #EDEDED !important; /* color cuando está enfocado */
 }
      #inputBusquedaGeneral:not(:placeholder-shown) {
   background-color: #EDEDED !important; /* por ejemplo, verde suave */
@@ -100,9 +100,9 @@ html {
       font-size: 14px;
       background: #fdfdfd;
       transition: border 0.2s;
-      font-family: "Montserrat", sans-serif;
+      font-family: 'DM Sans', sans-serif;
   font-optical-sizing: auto;
-  font-weight: <weight>;
+  font-weight: 400;
   font-style: normal;
     }
 
@@ -527,36 +527,111 @@ body.logueado #navbarMenu {
   font-size: 14px;
 }
 
+
+:root {
+  --crema: #FAF6F0;
+  --crema-oscuro: #F0E9DF;
+  --rosa: #C42685;
+  --rosa-suave: #F5E6F0;
+  --violeta: #362A6F;
+  --violeta-suave: #EAE8F5;
+  --texto: #2A2235;
+  --texto-suave: #7A6E85;
+  --blanco: #FFFFFF;
+  --sombra: 0 18px 50px rgba(54,42,111,0.12);
+}
+body {
+  background: radial-gradient(circle at top right, rgba(196,38,133,.11), transparent 30%), var(--crema);
+  color: var(--texto);
+}
+.app-navbar {
+  background: rgba(250,246,240,.92);
+  border-bottom: 1px solid rgba(196,38,133,.08);
+}
+.brand-link { color: inherit; text-decoration: none; display:flex; align-items:center; gap:12px; }
+.brand-link span { display:flex; flex-direction:column; color:var(--violeta); line-height:1.1; text-align:left; }
+.brand-link strong, .panel-hero h1, .search-copy h2 { font-family:'Playfair Display', serif; }
+.brand-link small { color:var(--texto-suave); font-size:.76rem; }
+.navbar-menu .nav-link { color: var(--texto-suave); border-radius:999px; }
+.navbar-menu .nav-link:hover { color: var(--blanco); }
+.btn-redireccion, .logout-btn, button { border-radius:999px; }
+.logout-btn { background: var(--violeta) !important; color: var(--blanco) !important; }
+.panel-hero {
+  max-width: 1120px;
+  margin: 34px auto 18px;
+  padding: 34px 24px;
+  display:grid;
+  grid-template-columns: minmax(0,1fr) 360px;
+  gap:24px;
+  align-items:stretch;
+  text-align:left;
+}
+.app-badge, .section-eyebrow {
+  display:inline-flex;
+  color:var(--rosa);
+  background:var(--rosa-suave);
+  border-radius:999px;
+  padding:7px 15px;
+  font-weight:700;
+  font-size:.78rem;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  margin-bottom:14px;
+}
+.panel-hero h1 { color:var(--violeta); font-size:clamp(2rem,4vw,3.4rem); line-height:1.08; margin:0 0 14px; }
+.panel-hero p { color:var(--texto-suave); line-height:1.7; max-width:680px; }
+.panel-kpis { display:grid; gap:12px; }
+.panel-kpis article, .search-card, .resultado, #busquedaFecha, .container, #loginDiv {
+  background:rgba(255,255,255,.92);
+  border:1px solid rgba(196,38,133,.09);
+  border-radius:26px;
+  box-shadow:var(--sombra);
+}
+.panel-kpis article { padding:18px; display:grid; gap:4px; }
+.panel-kpis strong { color:var(--violeta); font-size:1.6rem; font-family:'Playfair Display',serif; }
+.panel-kpis span { color:var(--texto-suave); }
+.panel-workspace { max-width:1120px; }
+.search-card { padding:26px; margin-bottom:18px; }
+.search-copy h2 { color:var(--violeta); font-size:1.8rem; margin:0 0 8px; }
+.search-copy p { color:var(--texto-suave); max-width:660px; margin:0 auto 18px; line-height:1.6; }
+input[type="text"], input[type="email"], textarea, select, input[type="date"] { border-radius:12px; border-color:rgba(54,42,111,.15); font-family:'DM Sans',sans-serif; }
+.resultado { padding:20px; }
+.resultado-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }
+.clinical-timeline { margin-top:18px; display:grid; gap:12px; }
+.timeline-card { border:1px solid rgba(54,42,111,.1); border-radius:18px; padding:14px; background:linear-gradient(180deg,#fff,rgba(245,230,240,.35)); }
+.timeline-card h4 { margin:0 0 8px; color:var(--violeta); }
+.reminder-pill { display:inline-flex; align-items:center; gap:8px; background:var(--rosa-suave); color:var(--rosa); padding:8px 12px; border-radius:999px; font-weight:700; margin:8px 0 14px; }
+@media (max-width:768px){
+  .panel-hero { grid-template-columns:1fr; padding:24px 16px; }
+  .desktop-actions { display:none; }
+  .resultado-grid { grid-template-columns:1fr; }
+  .navbar-menu { background:rgba(250,246,240,.98); top:72px; min-width:220px; }
+  .navbar-menu .nav-link { color:var(--violeta); }
+}
+
   </style>
 
 </head>
 <body>
 
-<header>
-  <div class="navbar-logo">
-    <img src="https://i.ibb.co/hFyg48KD/Logo-Dra-Bruzera.png" alt="Logo" />
+<header class="app-navbar">
+  <a class="navbar-logo brand-link" href="../index.html" aria-label="Volver al inicio">
+    <img src="https://i.ibb.co/hFyg48KD/Logo-Dra-Bruzera.png" alt="Logo Dra. Lili Bruzera" />
+    <span><strong>Dra. Lili Bruzera</strong><small>Panel veterinario</small></span>
+  </a>
+  <div class="navbar-action desktop-actions">
+    <a class="btn-redireccion" href="../turnero.html">Ver turnero</a>
   </div>
- <div class="navbar-action">
-    <button class="btn-redireccion" onclick="window.location.href='https://bruzera.turnox.pro/turnero.html'">
-      VOLVER A TURNERO
-    </button>
-  </div>
-    <!-- Botón hamburguesa-->
-  <button class="navbar-toggle" id="navbarToggle">
+  <button class="navbar-toggle" id="navbarToggle" aria-label="Abrir menú">
     <i class="fas fa-bars"></i>
   </button>
-
-  <!-- Menú de enlaces -->
   <nav class="navbar-menu" id="navbarMenu">
+    <a href="#pacientes" class="nav-link">Pacientes</a>
     <a href="#turnos" class="nav-link">Turnos</a>
-    <a href="https://bruzera.netlify.app/recordatorios/" class="nav-link">Próximas Vacunas</a>
-     
-    <button onclick="logout()" style="background:#EDEDED; color:#999">Cerrar sesión</button>
+    <a href="../recordatorios/" class="nav-link">Recordatorios</a>
+    <a href="../index.html" class="nav-link">Web pública</a>
+    <button onclick="logout()" class="logout-btn">Cerrar sesión</button>
   </nav>
-  
-  
- 
-
 </header>
 
   
@@ -576,8 +651,20 @@ body.logueado #navbarMenu {
 
 <div id="appDiv" style="text-align: center; display:none;">
   <!-- APP PRINCIPAL -->
+  <section class="panel-hero">
+    <div>
+      <span class="app-badge">Área profesional</span>
+      <h1>Panel clínico de pacientes, turnos y recordatorios.</h1>
+      <p>Acceso unificado a fichas médicas, búsqueda por nombre o ID, agenda diaria y vacunas próximas, manteniendo los endpoints actuales de Apps Script.</p>
+    </div>
+    <div class="panel-kpis" aria-label="Resumen del panel">
+      <article><strong id="kpiPacientes">—</strong><span>Resultados cargados</span></article>
+      <article><strong id="kpiRecordatorios">—</strong><span>Vacunas próximas</span></article>
+      <article><strong id="kpiTurnosHoy">Hoy</strong><span>Agenda del día</span></article>
+    </div>
+  </section>
 <div id="mensajeBienvenida" class="mensaje-bienvenida" style="display:none;"></div>
-  <div class="container">
+  <div class="container panel-workspace" id="pacientes">
 <div class="creditos-container">
   <!-- Botón con SVG -->
   <button id="creditosBtn" class="creditos-btn" title="Ver créditos">
@@ -598,19 +685,21 @@ body.logueado #navbarMenu {
   </div>
 </div>
    <!-- BUSQUEDA GENERAL -->
-<div class="busqueda-container">   
-  <p style="font-size: 14px; text-align: center;">
-    Para acceder a la Ficha Médica necesitas el ID, si no lo tenés, buscá por Nombre primero.
-  </p>
+<div class="busqueda-container search-card">
+  <div class="search-copy">
+    <span class="section-eyebrow">Búsqueda de pacientes</span>
+    <h2>Encontrá rápido una mascota o abrí su ficha médica.</h2>
+    <p>Buscá por nombre para identificar el ID. Con el ID abrís el historial clínico editable y los recordatorios de vacunas.</p>
+  </div>
 
   <input type="text" id="inputBusquedaGeneral" style="text-align: center;" placeholder="Ej: Fido o ABC123 para Ficha Médica" />
 
   <div class="botones-busqueda">
     <button onclick="buscarGeneral()" style="text-align: center;">
-      <i class="fas fa-search"></i> Nombre
+      <i class="fas fa-search"></i> Buscar por nombre
     </button>
     <button onclick="verHistorial()" style="text-align: center;">
-      <i class="fas fa-clock-rotate-left"></i> Ficha Médica
+      <i class="fas fa-clock-rotate-left"></i> Abrir ficha médica
     </button>
   </div>
 </div>
@@ -743,6 +832,65 @@ function fechaVacunaToString(fechaStr) {
   return fecha.toLocaleDateString("es-AR");
 }
 
+
+function fechaParaOrden(fechaStr) {
+  if (!fechaStr) return null;
+  if (typeof fechaStr === "string" && fechaStr.includes("/")) {
+    const [dia, mes, anio] = fechaStr.split("/").map(Number);
+    return new Date(anio, mes - 1, dia);
+  }
+  const fecha = new Date(fechaStr);
+  return isNaN(fecha.getTime()) ? null : fecha;
+}
+
+function actualizarResumenPanel(lista = []) {
+  const kpiPacientes = document.getElementById("kpiPacientes");
+  const kpiRecordatorios = document.getElementById("kpiRecordatorios");
+  if (!kpiPacientes || !kpiRecordatorios) return;
+  kpiPacientes.textContent = lista.length || "—";
+  const hoy = new Date();
+  const proximas = lista.filter((r) => {
+    const fecha = fechaParaOrden(r.proxima_vacuna);
+    if (!fecha) return false;
+    const diff = Math.ceil((fecha - hoy) / (1000 * 60 * 60 * 24));
+    return diff >= 0 && diff <= 30;
+  }).length;
+  kpiRecordatorios.textContent = proximas || "0";
+}
+
+function obtenerBloquesExtras(extras) {
+  if (!extras) return [];
+  const bloques = {};
+  Object.entries(extras).forEach(([clave, valor]) => {
+    const partes = clave.split("_");
+    if (partes.length !== 2) return;
+    const [campo, num] = partes;
+    if (!bloques[num]) bloques[num] = {};
+    bloques[num][campo] = valor;
+  });
+  return Object.values(bloques).filter((bloque) => Object.values(bloque).some((v) => String(v || "").trim() !== ""));
+}
+
+function renderResumenClinico(r) {
+  const proxima = fechaVacunaToString(r.proxima_vacuna || "");
+  const extras = obtenerBloquesExtras(r.extras).slice(-4).reverse();
+  const timeline = extras.length
+    ? extras.map((bloque) => `
+      <div class="timeline-card">
+        <h4>${fechaVacunaToString(bloque.Fecha || "Sin fecha")}</h4>
+        <p><strong>Motivo:</strong> ${bloque.Motivo || "Sin motivo"}</p>
+        <p><strong>Descripción:</strong> ${bloque.Descripción || "Sin descripción"}</p>
+        <p><strong>Observaciones:</strong> ${bloque.Observaciones || "Sin observaciones"}</p>
+      </div>`).join("")
+    : `<p style="color:#7A6E85;">Todavía no hay eventos médicos cargados para esta ficha.</p>`;
+  return `
+    <div class="reminder-pill"><i class="fas fa-bell"></i> Próxima vacuna: ${proxima || "sin fecha registrada"}</div>
+    <div class="clinical-timeline" aria-label="Historial médico reciente">
+      <h3>Historial médico reciente</h3>
+      ${timeline}
+    </div>`;
+}
+
   // BUSQUEDA GENERAL
   function buscarGeneral() {
     const query = document.getElementById("inputBusquedaGeneral").value.trim().toLowerCase();
@@ -768,8 +916,10 @@ function fechaVacunaToString(fechaStr) {
       cargando.style.display = "none";
       if (data.success && data.resultados.length > 0) {
         const esBusquedaGeneral = parametro.startsWith("?buscar=");
+        actualizarResumenPanel(data.resultados);
         mostrarResultados(data.resultados, titulo, esBusquedaGeneral);
       } else {
+        actualizarResumenPanel([]);
         resultadoDiv.innerHTML = "<p style='color:#C42685;'>No se encontraron datos.</p>";
       }
     })
@@ -843,6 +993,7 @@ function fechaVacunaToString(fechaStr) {
   value="${r.proxima_vacuna ? new Date(r.proxima_vacuna).toLocaleDateString('es-AR') : ''}" 
   disabled>
 
+          ${renderResumenClinico(r)}
 
           <div id="extraCampos-${index}"></div>
 
@@ -955,8 +1106,9 @@ function fechaVacunaToString(fechaStr) {
       const motivos = selectMotivo
         ? Array.from(selectMotivo.selectedOptions).map(opt => opt.value).join(", ")
         : "";
-      const descripcion = bloque.querySelector('textarea')?.value || "";
-      const observaciones = bloque.querySelector('textarea')?.value || "";
+      const textareas = bloque.querySelectorAll('textarea');
+      const descripcion = textareas[0]?.value || "";
+      const observaciones = textareas[1]?.value || "";
 
       // Guardar con claves ordenadas para backend
       datosActualizados.extras[`Fecha_${i+1}`] = fecha;
@@ -1052,6 +1204,8 @@ function buscarPorFecha() {
       cargandoFecha.style.display = "none";
 
       if (data.success && data.resultados.length > 0) {
+        const kpiTurnosHoy = document.getElementById("kpiTurnosHoy");
+        if (kpiTurnosHoy) kpiTurnosHoy.textContent = data.resultados.length;
         let [anio, mes, dia] = fecha.split("-");
 let fechaFormateada = `${dia}/${mes}/${anio}`;
 let html = `<h3>Turnos para el día ${fechaFormateada}</h3>`;
@@ -1072,6 +1226,8 @@ let html = `<h3>Turnos para el día ${fechaFormateada}</h3>`;
 
         resultadoFecha.innerHTML = html;
       } else {
+        const kpiTurnosHoy = document.getElementById("kpiTurnosHoy");
+        if (kpiTurnosHoy) kpiTurnosHoy.textContent = "0";
         resultadoFecha.innerHTML = `<p style="color:#C42685;">No hay turnos para este día</p>`;
       }
     })
@@ -1082,11 +1238,6 @@ let html = `<h3>Turnos para el día ${fechaFormateada}</h3>`;
     });
 }
 
-// Test de depuración manual:
-fetch(urlScript + "?fecha=2025-07-30")
-  .then(res => res.text())
-  .then(console.log)
-  .catch(err => console.error("Fetch error:", err));
 
 </script>
   <script>
