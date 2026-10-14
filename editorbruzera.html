@@ -2070,7 +2070,7 @@ function patchFadeMaterial(mat, uniforms) {
 /* Llave de programa: cada combinación de parches (descartar transparentes, fade/revelado, esquinas y marco) compila su propio shader. */
 function weebProgKey(mat) {
   const u = mat.userData || {};
-  return "weeb|" + (u.__discardClear ? "d" : "") + (u.__fadePatched ? "f5" : "") + (u.__txaPatched ? "t1" : "") + (u.__mediaPatched ? "m1" : "");
+  return "weeb|" + (u.__discardClear ? "d" : "") + (u.__fadePatched ? "f5" : "") + (u.__txaPatched ? "t1" : "") + (u.__mediaPatched ? "m1" : "") + (u.__txCrisp ? "c1" : "");
 }
 /* Esquinas redondeadas y marco para imágenes y videos (máscara en el shader, no toca la textura). */
 function patchMediaMaterial(mat, o, aspect) {
@@ -2754,8 +2754,7 @@ function makeCanvasFill(ctx, spec, r) {
    Devuelve { canvas, refH }: refH es la altura "de referencia" (la que tenía el
    texto antes de tocar interlineado/espaciado), así cambiar el interlineado
    no agranda ni achica las letras en la escena. */
-function drawTextCanvas(text, o) {
-  const FS = 200;
+function drawTextCanvasAt(text, o, FS) {
   const baseFont = o.font || DEFAULT_TEXT_FONT;
   const baseWeight = o.weight || 600;
   const ls = (o.letterSpacing || 0) * FS;
@@ -2870,6 +2869,32 @@ function drawTextCanvas(text, o) {
     },
   };
 }
+/* Resolución del texto según cuánto se agranda en la escena: un texto escala 11 estirado desde letras de 200 px se ve
+   pixelado y con un halo claro en el borde. Sube a 300/400/600/800 px (tope de 4096 px de ancho/alto de textura). */
+function textResFor(scaleMax) {
+  const m = +scaleMax || 1;
+  return Math.round(200 * (m <= 3 ? 1 : m <= 5 ? 1.5 : m <= 8 ? 2 : m <= 14 ? 3 : 4));
+}
+function drawTextCanvas(text, o) {
+  const base = drawTextCanvasAt(text, o, 200);
+  const want = Math.max(200, +(o && o.fs) || 200);
+  const k = Math.min(want / 200, 4096 / base.canvas.width, 4096 / base.canvas.height);
+  if (k < 1.1) return base;
+  return drawTextCanvasAt(text, o, Math.round(200 * k));
+}
+/* Bordes del texto nítidos aunque se agrande: se afila el canal alfa en el shader (sin halo claro al mezclarse con el fondo). */
+function sharpenTextAlpha(mat) {
+  if (!mat || (mat.userData && mat.userData.__txCrisp)) return;
+  mat.userData = mat.userData || {};
+  mat.userData.__txCrisp = true;
+  const prev = mat.onBeforeCompile;
+  mat.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(mat, shader, renderer);
+    shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>", "#include <map_fragment>\n#ifdef USE_MAP\n{ float txA = sampledDiffuseColor.a; vec2 txS = vec2(textureSize(map, 0)); vec2 txD = max(abs(dFdx(vMapUv * txS)), abs(dFdy(vMapUv * txS))); float txC = 1.0 - smoothstep(0.7, 1.4, max(txD.x, txD.y)); float txW = clamp(fwidth(txA) * 0.8, 0.04, 0.5); diffuseColor.a = opacity * mix(txA, smoothstep(0.5 - txW, 0.5 + txW, txA), txC); }\n#endif");
+  };
+  mat.customProgramCacheKey = () => weebProgKey(mat);
+  mat.needsUpdate = true;
+}
 /* Textura final del texto: color (opaco, sin negro en los bordes) + transparencia aparte. */
 function composeTextTexture(r) {
   const W = r.canvas.width, H = r.canvas.height;
@@ -2925,6 +2950,7 @@ function SceneObjectText({ data }) {
     letterSpacing: data.letterSpacing,
     lineHeight: data.lineHeight,
     wordStyles: data.wordStyles,
+    fs: textResFor(Math.max(1, ...data.keyframes.map((k) => (+k.scale || 1) * Math.max(+k.sx || 1, +k.sy || 1)))),
   });
   const effId = TEXT_EFFECTS[data.textEffect] || 0;
   const wantTA = effId > 0 || data.keyframes.some((k) => k.tk || k.lh);
@@ -2944,7 +2970,7 @@ function SceneObjectText({ data }) {
   const mesh = (
     <group ref={zRef}><mesh key={geo ? "g" : "p"} renderOrder={10} frustumCulled={!geo} geometry={geo || undefined} scale={[texture.image.width / refH, texture.image.height / refH, 1]}>
       {!geo && <planeGeometry args={[1, 1]} />}
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
+      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); sharpenTextAlpha(m); if (hasFade) patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
     </mesh></group>
   );
   return (
@@ -5837,7 +5863,10 @@ const _textFontLoads = {};
 //@@use ensureTextFont
 //@@use textFontWeight
 //@@use makeCanvasFill
+//@@use drawTextCanvasAt
+//@@use textResFor
 //@@use drawTextCanvas
+//@@use sharpenTextAlpha
 //@@use composeTextTexture
 //@@use useHiResTextTexture
 function ObjectPreviewText({ obj, fade }) {
@@ -5852,6 +5881,7 @@ function ObjectPreviewText({ obj, fade }) {
     letterSpacing: obj.letterSpacing,
     lineHeight: obj.lineHeight,
     wordStyles: obj.wordStyles,
+    fs: textResFor((+obj.scale || 1) * Math.max(+obj.sx || 1, +obj.sy || 1)),
   });
   const effId = TEXT_EFFECTS[obj.textEffect] || 0;
   const wantTA = effId > 0 || !!obj.tk || !!obj.lh;
@@ -5873,7 +5903,7 @@ function ObjectPreviewText({ obj, fade }) {
       rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
     >
       {!geo && <planeGeometry args={[1, 1]} />}
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
+      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); sharpenTextAlpha(m); patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
