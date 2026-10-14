@@ -1040,6 +1040,21 @@ function lerpAngle(a, b, t) {
   let diff = ((b - a + 180) % 360 + 360) % 360 - 180;
   return a + diff * t;
 }
+/* Cámara en ARCO: gira alrededor del punto al que mira (distancia y altura
+   parejas) en vez de ir en línea recta entre poses. Se activa con camera.arc
+   en la pose destino. */
+function lerpOrbit(ca, cb, t) {
+  const la = ca.lookAt, lb = cb.lookAt, pa = ca.position, pb = cb.position;
+  const ax = pa[0] - la[0], az = pa[2] - la[2], bx = pb[0] - lb[0], bz = pb[2] - lb[2];
+  const ra = Math.hypot(ax, az), rb = Math.hypot(bx, bz);
+  const mix = (u, v) => u + (v - u) * t;
+  if (ra < 1e-4 || rb < 1e-4) return [mix(pa[0], pb[0]), mix(pa[1], pb[1]), mix(pa[2], pb[2])];
+  const a0 = Math.atan2(ax, az);
+  let d = Math.atan2(bx, bz) - a0;
+  d = Math.atan2(Math.sin(d), Math.cos(d));
+  const ang = a0 + d * t, r = mix(ra, rb);
+  return [mix(la[0], lb[0]) + r * Math.sin(ang), mix(la[1], lb[1]) + mix(pa[1] - la[1], pb[1] - lb[1]), mix(la[2], lb[2]) + r * Math.cos(ang)];
+}
 function lightDirFromAngles(azimuthDeg, elevationDeg, distance) {
   const az = (azimuthDeg * Math.PI) / 180;
   const el = (elevationDeg * Math.PI) / 180;
@@ -1098,7 +1113,7 @@ function blendScenes(list, rawProgress) {
 
   return {
     camera: {
-      position: lerpVec3(a.camera.position, b.camera.position, t),
+      position: b.camera.arc ? lerpOrbit(a.camera, b.camera, t) : lerpVec3(a.camera.position, b.camera.position, t),
       lookAt: lerpVec3(a.camera.lookAt, b.camera.lookAt, t),
       fov: lerp(a.camera.fov, b.camera.fov, t),
       roll: lerp(a.camera.roll || 0, b.camera.roll || 0, t),
@@ -5306,7 +5321,7 @@ function sampleCamera(camsByKf, progress, stages, easings) {
   const span = b.progress - a.progress || 1;
   const t = applyEasing(clamp((p - a.progress) / span), easings[i]);
   const ca = camsByKf[a.id], cb = camsByKf[b.id];
-  return { position: lerpVec3(ca.position, cb.position, t), lookAt: lerpVec3(ca.lookAt, cb.lookAt, t), fov: lerp(ca.fov, cb.fov, t), roll: lerp(ca.roll || 0, cb.roll || 0, t) };
+  return { position: cb.arc ? lerpOrbit(ca, cb, t) : lerpVec3(ca.position, cb.position, t), lookAt: lerpVec3(ca.lookAt, cb.lookAt, t), fov: lerp(ca.fov, cb.fov, t), roll: lerp(ca.roll || 0, cb.roll || 0, t) };
 }
 
 function sampleMovement(movesByKf, progress, stages, easings) {
@@ -5627,6 +5642,7 @@ function FadeGroup({ obj, fade, children }) {
 //@@use bookDownloadTicket
 //@@use BOOK_CSS
 //@@use BookingOverlay
+//@@use lerpOrbit
 //@@use lookLight
 //@@use NaturalFill
 //@@use buildStudioEnvTexture
@@ -6711,7 +6727,7 @@ function generateScenesArrayCode(camsByKf, fxByKf, stages, easings) {
     id: "${kf.id}",
     progress: ${roundProgress(kf.progress)},
     easing: "${easing}",
-    camera: { position: ${fmtVec(cam.position)}, lookAt: ${fmtVec(cam.lookAt)}, fov: ${fmtNum(cam.fov)}, roll: ${fmtNum(cam.roll || 0)} },
+    camera: { position: ${fmtVec(cam.position)}, lookAt: ${fmtVec(cam.lookAt)}, fov: ${fmtNum(cam.fov)}, roll: ${fmtNum(cam.roll || 0)}${cam.arc ? ", arc: true" : ""} },
     light: { color: "${f.light.color}", intensity: ${f.light.intensity}, azimuth: ${fmtNum(f.light.azimuth)}, elevation: ${fmtNum(f.light.elevation)}, rimColor: "${f.light.rimColor}", rimIntensity: ${f.light.rimIntensity}, ambient: ${fmtNum(f.light.ambient ?? 0.28)} },
     fog: { enabled: ${f.fog.enabled === false ? "false" : "true"}, color: "${f.fog.color}", far: ${f.fog.far} },
     background: { from: "${f.background.from}", to: "${f.background.to}", angle: ${fmtNum(f.background.angle)}, alpha: ${f.background.mode === "transparent" ? 0 : fmtNum(f.background.alpha ?? 1)}${f.background.mode === "gradient" && f.background.midOn && f.background.mid ? `, mid: "${f.background.mid}", midPos: ${fmtNum(f.background.midPos == null ? 50 : f.background.midPos)}` : ""} },
@@ -7991,6 +8007,52 @@ function App() {
     setActiveStage(newId);
   };
 
+  /* Vuelta completa: desde la cámara de la pose activa agrega 4 poses que
+     giran 90° cada una alrededor de «Mira a» (la última queda igual a la de
+     partida). Movimiento en arco y a velocidad pareja. */
+  const addOrbitLap = (dir) => {
+    const idx = stages.findIndex((s) => s.id === activeStage);
+    if (idx === -1) return;
+    const refId = stages[idx].id;
+    const base = camsByKf[refId] || defaultCamera();
+    const STEPS = 4, SEG = 100;
+    const stamp = Date.now();
+    const ids = Array.from({ length: STEPS }, (_, k) => `pose-${stamp}-${k}`);
+    const used = new Set(stages.map((s) => s.label));
+    let n = stages.length + 1;
+    const labels = ids.map(() => { while (used.has(`Pose ${n}`)) n++; used.add(`Pose ${n}`); return `Pose ${n}`; });
+    const atEnd = idx === stages.length - 1;
+    const clone = (o) => JSON.parse(JSON.stringify(o));
+    setStages((prev) => { const next = [...prev]; next.splice(idx + 1, 0, ...ids.map((id, k) => ({ id, label: labels[k] }))); return next; });
+    setDurationsVh((prev) => { const next = [...prev]; if (atEnd || next[idx] == null) next.push(...ids.map(() => SEG)); else next.splice(idx, 0, ...ids.map(() => SEG)); return next; });
+    setEasings((prev) => { const next = [...prev]; if (atEnd || next[idx] == null) next.push(...ids.map(() => "linear")); else next.splice(idx, 0, ...ids.map(() => "linear")); return next; });
+    setPosesByKf((prev) => { const o = { ...prev }; ids.forEach((id) => { o[id] = clone(prev[refId] || zeroPose()); }); return o; });
+    setMovesByKf((prev) => { const o = { ...prev }; ids.forEach((id) => { o[id] = clone(prev[refId] || defaultMovement()); }); return o; });
+    setFxByKf((prev) => { const o = { ...prev }; ids.forEach((id) => { o[id] = clone(prev[refId] || defaultFx()); }); return o; });
+    setObjectTransformsByKf((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((objId) => {
+        const o2 = { ...next[objId] };
+        ids.forEach((id) => { o2[id] = clone(next[objId][refId] || { position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" }); });
+        next[objId] = o2;
+      });
+      return next;
+    });
+    setCamsByKf((prev) => {
+      const o = { ...prev };
+      const [lx, , lz] = base.lookAt;
+      const dx = base.position[0] - lx, dz = base.position[2] - lz;
+      ids.forEach((id, k) => {
+        const a = (dir * (k + 1) * 2 * Math.PI) / STEPS;
+        const c = Math.cos(a), sn = Math.sin(a);
+        const last = k === STEPS - 1;
+        o[id] = { ...clone(base), position: [last ? base.position[0] : lx + dx * c + dz * sn, base.position[1], last ? base.position[2] : lz - dx * sn + dz * c], arc: true };
+      });
+      return o;
+    });
+    setActiveStage(ids[STEPS - 1]);
+  };
+
   const removeStage = (id) => {
     const idx = stages.findIndex((s) => s.id === id);
     if (stages.length <= 1 || idx === -1) return;
@@ -8308,7 +8370,7 @@ function App() {
     if (!live) return;
     setCamsByKf((prev) => ({
       ...prev,
-      [activeStage]: { position: live.position, lookAt: live.lookAt, fov: live.fov, roll: prev[activeStage].roll || 0 },
+      [activeStage]: { position: live.position, lookAt: live.lookAt, fov: live.fov, roll: prev[activeStage].roll || 0, ...(prev[activeStage].arc ? { arc: true } : {}) },
     }));
   };
   const setFxField = (group, field, value) => {
@@ -9353,6 +9415,11 @@ function App() {
                   <Btn icon="copy" onClick={copyCamFromPrev} disabled={stageIndex <= 0}>Desde anterior</Btn>
                   <Btn icon="capture" kind="acc" onClick={captureFreeCamera} disabled={!freeOrbit} title="Activá «Libre» en el visor">Capturar vista</Btn>
                 </div>
+                <div className="tools">
+                  <Btn icon="copy" onClick={() => addOrbitLap(1)} title="Agrega 4 poses que giran 360° alrededor de «Mira a», desde la cámara de esta pose">Vuelta 360° ↻</Btn>
+                  <Btn icon="copy" onClick={() => addOrbitLap(-1)} title="Igual, en sentido contrario">Vuelta 360° ↺</Btn>
+                </div>
+                <Switch checked={!!cam.arc} onChange={(v) => setCamsByKf((prev) => ({ ...prev, [activeStage]: { ...prev[activeStage], arc: v } }))} label="Ir en arco hasta esta pose (gira alrededor de «Mira a»)" />
                 <Group id="cam" title="Cámara">
                   <Vec3 label="Posición" value={cam.position} onChange={(a, v) => setCamField("position", a, v)} />
                   <Vec3 label="Mira a" value={cam.lookAt} onChange={(a, v) => setCamField("lookAt", a, v)} />
