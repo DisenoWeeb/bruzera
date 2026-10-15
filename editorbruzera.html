@@ -2348,8 +2348,12 @@ const SHAPE_VERT = `
 varying vec2 vUv;
 varying float vFadeX;
 varying float vFadeY;
+varying vec3 vWP;
+varying vec3 vWN;
 void main() {
   vUv = uv;
+  vWP = (modelMatrix * vec4(position, 1.0)).xyz;
+  vWN = normalize(mat3(modelMatrix) * vec3(0.0, 0.0, 1.0));
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   vFadeX = gl_Position.x / gl_Position.w;
   vFadeY = gl_Position.y / gl_Position.w;
@@ -2369,6 +2373,15 @@ uniform float uShift;
 uniform float uCap;
 uniform vec2 uGrid;
 uniform float uDot;
+uniform float uLit;
+uniform float uLitBase;
+uniform int uLN;
+uniform vec3 uLP[8];
+uniform vec3 uLD[8];
+uniform vec3 uLC[8];
+uniform vec4 uLS[8];
+varying vec3 vWP;
+varying vec3 vWN;
 varying vec2 vUv;
 float shDashDist(float t, float L, float dl) {
   float tt = mod(t, L);
@@ -2451,6 +2464,23 @@ void main() {
   float a = strC.a + fillC.a * (1.0 - strC.a);
   vec3 rgb = (strC.rgb * strC.a + fillC.rgb * fillC.a * (1.0 - strC.a)) / max(a, 0.0001);
   if (a < 0.002) discard;
+  if (uLit > 0.5) {
+    vec3 ln = normalize(vWN);
+    if (!gl_FrontFacing) ln = -ln;
+    vec3 acc = vec3(uLitBase);
+    for (int i = 0; i < 8; i++) {
+      if (i >= uLN) break;
+      vec3 lv = uLP[i] - vWP;
+      float ld = max(length(lv), 0.001);
+      vec3 ldir = lv / ld;
+      float ndl = max(dot(ln, ldir), 0.0);
+      float cone = uLS[i].w > 0.5 ? 1.0 : smoothstep(uLS[i].x, uLS[i].y, dot(-ldir, uLD[i]));
+      float at = 1.0 / (ld * ld);
+      if (uLS[i].z > 0.0) { float rr = clamp(1.0 - pow(ld / uLS[i].z, 4.0), 0.0, 1.0); at *= rr * rr; }
+      acc += uLC[i] * (ndl * cone * at * 0.31830989);
+    }
+    rgb *= acc;
+  }
   gl_FragColor = vec4(rgb, a);
   ${FADE_FRAG_BODY}
   #include <colorspace_fragment>
@@ -2476,6 +2506,9 @@ function makeShapeMaterial(fade) {
       uBox: { value: new THREE.Vector2(1, 1) }, uSize: { value: new THREE.Vector2(1, 1) }, uKind: { value: 0 }, uRad: { value: 0 },
       uFill: { value: new THREE.Vector4(1, 1, 1, 0) }, uStroke: { value: new THREE.Vector4(1, 1, 1, 1) }, uSW: { value: 0.01 },
       uDash: { value: 0 }, uGap: { value: 0 }, uShift: { value: 0 }, uCap: { value: 1 }, uGrid: { value: new THREE.Vector2(8, 4) }, uDot: { value: 0.5 },
+      uLit: { value: 0 }, uLitBase: { value: 0.2 }, uLN: { value: 0 },
+      uLP: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLD: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, -1)) },
+      uLC: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLS: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
     }),
     vertexShader: SHAPE_VERT,
     fragmentShader: FADE_FRAG_DECL + SHAPE_FRAG,
@@ -2507,6 +2540,35 @@ function applyShapeUniforms(mat, mesh, o, sh, kx, ky) {
   _shapeCol.set(g("strokeColor")); U.uStroke.value.set(_shapeCol.r, _shapeCol.g, _shapeCol.b, g("strokeAlpha"));
   mesh.scale.set((w + pad) * (kx || 1), (h + pad) * (ky || 1), 1);
   mesh.rotation.z = ((g("rot") || 0) * Math.PI) / 180;
+  applyShapeLights(mat, o.lit, o.litBase);
+}
+/* Registro de las luces-objeto activas: las formas ("Recibe luz") las leen para iluminarse con su propio shader. */
+const WEEB_LIGHTS = new Map();
+function weebLightSet(key, o, pos, lt, li) {
+  let L = WEEB_LIGHTS.get(key);
+  if (!L) { L = { p: new THREE.Vector3(), d: new THREE.Vector3(), c: new THREE.Color(), i: 0, cosO: 1, cosI: 1, dist: 0, point: false }; WEEB_LIGHTS.set(key, L); }
+  L.p.set(pos[0], pos[1], pos[2]);
+  L.d.set(lt[0] - pos[0], lt[1] - pos[1], lt[2] - pos[2]).normalize();
+  L.c.set(o.lightColor || "#fff4e0");
+  L.i = (o.lightIntensity ?? 80) * Math.max(0, li ?? 1);
+  const ang = Math.min(1.5, Math.max(0.05, ((o.lightAngle ?? 35) * Math.PI) / 180));
+  L.cosO = Math.cos(ang); L.cosI = Math.cos(ang * (1 - (o.lightPenumbra ?? 0.5)));
+  L.dist = o.lightDistance || 0; L.point = o.lightKind === "point";
+}
+function applyShapeLights(mat, lit, base) {
+  const U = mat.uniforms;
+  U.uLit.value = lit ? 1 : 0;
+  if (!lit) return;
+  U.uLitBase.value = base ?? 0.2;
+  let n = 0;
+  WEEB_LIGHTS.forEach((L) => {
+    if (n >= 8 || L.i <= 0.0001) return;
+    U.uLP.value[n].copy(L.p); U.uLD.value[n].copy(L.d);
+    U.uLC.value[n].set(L.c.r * L.i, L.c.g * L.i, L.c.b * L.i);
+    U.uLS.value[n].set(L.cosO, L.cosI, L.dist, L.point ? 1 : 0);
+    n++;
+  });
+  U.uLN.value = n;
 }
 
 function sampleObjectKeyframes(keyframes, progress) {
@@ -3493,7 +3555,9 @@ function SceneObjectLight({ data }) {
     const lt = kf.lt || [0, 0, 0];
     tgt.position.set(lt[0], lt[1], lt[2]);
     L.intensity = (data.lightIntensity ?? 80) * Math.max(0, kf.li ?? 1);
+    weebLightSet(tgt.uuid, data, kf.position, lt, kf.li);
   });
+  useEffect(() => () => { WEEB_LIGHTS.delete(tgt.uuid); }, [tgt]);
   const common = { color: data.lightColor || "#fff4e0", intensity: 0, distance: data.lightDistance || 0, decay: data.lightDecay ?? 2 };
   const shadow = !!data.lightShadow && perf.tier >= 2 && !IS_MOBILE_VIEW;
   if (data.lightKind === "point") return <pointLight ref={ref} {...common} castShadow={shadow} />;
@@ -5679,6 +5743,9 @@ function FadeGroup({ obj, fade, children }) {
 //@@use BookingOverlay
 //@@use lerpOrbit
 //@@use TexMaterial
+//@@use WEEB_LIGHTS
+//@@use weebLightSet
+//@@use applyShapeLights
 //@@use lookLight
 //@@use NaturalFill
 //@@use buildStudioEnvTexture
@@ -6040,6 +6107,8 @@ function ObjectPreviewLight({ obj }) {
   useEffect(() => { scene.add(tgt); return () => { scene.remove(tgt); }; }, [scene, tgt]);
   useEffect(() => { if (ref.current && spot) ref.current.target = tgt; }, [tgt, spot]);
   tgt.position.set(lt[0], lt[1], lt[2]);
+  useFrame(() => { weebLightSet(tgt.uuid, obj, obj.position, lt, obj.li); });
+  useEffect(() => () => { WEEB_LIGHTS.delete(tgt.uuid); }, [tgt]);
   const line = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: col, dashSize: 0.12, gapSize: 0.1, transparent: true, opacity: 0.7, depthTest: false })), []);
   useEffect(() => { line.material.color.set(col); }, [col, line]);
   useEffect(() => { line.geometry.setFromPoints([new THREE.Vector3(obj.position[0], obj.position[1], obj.position[2]), new THREE.Vector3(lt[0], lt[1], lt[2])]); line.computeLineDistances(); }, [line, obj.position[0], obj.position[1], obj.position[2], lt[0], lt[1], lt[2]]);
@@ -7031,6 +7100,8 @@ ${kfLines}
     shapeCap: "${o.shapeCap || "round"}",
     shapeCols: ${Math.max(1, Math.round(o.shapeCols || 8))},
     shapeRows: ${Math.max(1, Math.round(o.shapeRows || 4))},
+    lit: ${o.lit ? "true" : "false"},
+    litBase: ${fmtNum(o.litBase ?? 0.2)},
     billboard: ${o.billboard ? "true" : "false"},
     keyframes: [
 ${kfLines}
@@ -9101,9 +9172,9 @@ function App() {
         )}
         {isModel && <Switch checked={o.shadows !== false} onChange={(v) => updateObject(o.id, { shadows: v })} label="Sombras (proyecta / recibe)" />}
         {!isModel && <Switch checked={!!o.billboard} onChange={(v) => updateObject(o.id, { billboard: v })} label="Billboard (mira a cámara)" />}
-        {(isText || isImage) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
-        {(isText || isImage) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
-        {(isText || isImage) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
+        {(isText || isImage || isShape) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
+        {(isText || isImage || isShape) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
+        {(isText || isImage || isShape) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
         <div className="grp-t" style={{ marginTop: 4 }}>Transformación · {currentStageLabel}</div>
         <Slider label="Escala" min={0.05} max={20} step={0.01} value={t.scale} onChange={(v) => setObjectTransform(o.id, "scale", null, v)} />
         {!isModel && <Slider label="Estirar ancho" min={0.05} max={6} step={0.01} value={t.sx ?? 1} onChange={(v) => setObjectTransform(o.id, "sx", null, v)} />}
