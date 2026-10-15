@@ -1993,6 +1993,7 @@ function makeFadeUniforms() {
     uFadeMinY: { value: -1 },
     uFadeMaxY: { value: 1 },
     uFadeBlur: { value: 0 },
+    uBlr: { value: 0 },
     uTxOwn: { value: 0 },
   };
 }
@@ -2000,6 +2001,26 @@ function makeFadeUniforms() {
    el ancho del objeto, más alto = todavía más largo/delicado. */
 const FADE_SOFT = 1.0;
 const FADE_FRAG_DECL = `
+#define WEEB_FADE
+varying vec2 vBlrS;
+uniform float uBlr;
+/* Desenfoque manual por objeto (uBlr = radio como fracción del alto del objeto): 16 muestras en espiral + bajada de mipmap para que quede suave. */
+vec4 weebTex(sampler2D t, vec2 uv, float bias) {
+  if (uBlr < 0.0005) return texture2D(t, uv, bias);
+  float asp = max(vBlrS.x, 0.0001) / max(vBlrS.y, 0.0001);
+  vec2 ts = vec2(textureSize(t, 0));
+  float lod = max(0.0, log2(max(uBlr * ts.y / 5.0, 1.0)));
+  vec4 acc = vec4(0.0);
+  for (int i = 0; i < 16; i++) {
+    float fi = float(i) + 0.5;
+    float rr = sqrt(fi / 16.0);
+    float th = fi * 2.3999632;
+    vec2 o = vec2(cos(th) / asp, sin(th)) * rr * uBlr;
+    vec4 c = texture2D(t, uv + o, bias + lod);
+    acc += vec4(c.rgb * c.a, c.a);
+  }
+  return vec4(acc.rgb / max(acc.a, 0.0001), acc.a / 16.0);
+}
 varying float vFadeX;
 varying float vFadeY;
 uniform float uFadeAxis;
@@ -2068,12 +2089,12 @@ function patchFadeMaterial(mat, uniforms) {
     if (prev) prev.call(mat, shader, renderer);
     Object.assign(shader.uniforms, mat.userData.__fadeU);
     mat.userData.__fadeShader = shader;
-    shader.vertexShader = "varying float vFadeX;\nvarying float vFadeY;\n" + shader.vertexShader.replace(
+    shader.vertexShader = "varying float vFadeX;\nvarying float vFadeY;\nvarying vec2 vBlrS;\n" + shader.vertexShader.replace(
       "#include <project_vertex>",
-      "#include <project_vertex>\n vFadeX = gl_Position.x / gl_Position.w;\n vFadeY = gl_Position.y / gl_Position.w;"
+      "#include <project_vertex>\n vFadeX = gl_Position.x / gl_Position.w;\n vFadeY = gl_Position.y / gl_Position.w;\n vBlrS = vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz));"
     );
     /* desenfoque de entrada/salida: se muestrea la textura en un nivel de mipmap más bajo (uFadeBlur = niveles) */
-    shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>", THREE.ShaderChunk.map_fragment.replace("texture2D( map, vMapUv )", "texture2D( map, vMapUv, uFadeBlur )"));
+    shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>", THREE.ShaderChunk.map_fragment.replace("texture2D( map, vMapUv )", "weebTex( map, vMapUv, uFadeBlur )"));
     shader.fragmentShader = FADE_FRAG_DECL + shader.fragmentShader.replace(
       "#include <dithering_fragment>",
       "#include <dithering_fragment>\n" + FADE_FRAG_BODY
@@ -2085,7 +2106,7 @@ function patchFadeMaterial(mat, uniforms) {
 /* Llave de programa: cada combinación de parches (descartar transparentes, fade/revelado, esquinas y marco) compila su propio shader. */
 function weebProgKey(mat) {
   const u = mat.userData || {};
-  return "weeb|" + (u.__discardClear ? "d" : "") + (u.__fadePatched ? "f5" : "") + (u.__txaPatched ? "t1" : "") + (u.__mediaPatched ? "m1" : "") + (u.__txCrisp ? "c1" : "");
+  return "weeb|" + (u.__discardClear ? "d" : "") + (u.__fadePatched ? "f6" : "") + (u.__txaPatched ? "t1" : "") + (u.__mediaPatched ? "m1" : "") + (u.__txCrisp ? "c1" : "") + (u.__shpPatched ? (u.__shpRefl ? "s1r" : "s1") : "");
 }
 /* Esquinas redondeadas y marco para imágenes y videos (máscara en el shader, no toca la textura). */
 function patchMediaMaterial(mat, o, aspect) {
@@ -2350,8 +2371,10 @@ varying float vFadeX;
 varying float vFadeY;
 varying vec3 vWP;
 varying vec3 vWN;
+varying vec2 vBlrS;
 void main() {
   vUv = uv;
+  vBlrS = vec2(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz));
   vWP = (modelMatrix * vec4(position, 1.0)).xyz;
   vWN = normalize(mat3(modelMatrix) * vec3(0.0, 0.0, 1.0));
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -2359,7 +2382,8 @@ void main() {
   vFadeY = gl_Position.y / gl_Position.w;
 }
 `;
-const SHAPE_FRAG = `
+const SHAPE_CORE = `
+
 uniform vec2 uBox;
 uniform vec2 uSize;
 uniform float uKind;
@@ -2373,16 +2397,10 @@ uniform float uShift;
 uniform float uCap;
 uniform vec2 uGrid;
 uniform float uDot;
-uniform float uLit;
-uniform float uLitBase;
-uniform int uLN;
-uniform vec3 uLP[8];
-uniform vec3 uLD[8];
-uniform vec3 uLC[8];
-uniform vec4 uLS[8];
-varying vec3 vWP;
-varying vec3 vWN;
-varying vec2 vUv;
+uniform vec4 uFill2;
+uniform vec2 uGradDir;
+uniform float uGradAmt;
+uniform float uGradK;
 float shDashDist(float t, float L, float dl) {
   float tt = mod(t, L);
   float a1 = max(max(-tt, tt - dl), 0.0);
@@ -2406,20 +2424,29 @@ float shPerimT(vec2 p, vec2 b, float r) {
   else t = P - u;
   return t;
 }
-void main() {
+vec4 weebShapeColor(vec2 vUv) {
   vec2 p = (vUv - 0.5) * uSize;
+  float bwS = uBlr * max(min(uBox.x, uBox.y), 0.25 * max(uBox.x, uBox.y));
   vec4 fillC = vec4(0.0);
   vec4 strC = vec4(0.0);
   float sw = max(uSW, 0.0);
   bool solid = (uDash <= 0.0 && uGap <= 0.0);
+  vec3 fillRgb = uFill.rgb;
+  float fillA = uFill.a;
+  if (uGradAmt > 0.001) {
+    vec2 gu = p / max(uBox, vec2(0.0001));
+    float gt = uGradK > 0.5 ? clamp(length(gu) * 2.0, 0.0, 1.0) : clamp(0.5 + dot(gu, uGradDir) / max(abs(uGradDir.x) + abs(uGradDir.y), 0.0001), 0.0, 1.0);
+    fillRgb = mix(uFill.rgb, uFill2.rgb, gt * uGradAmt);
+    fillA = mix(uFill.a, uFill2.a, gt * uGradAmt);
+  }
   if (uKind < 0.5) {
     float mn = min(uBox.x, uBox.y);
     float r = clamp(uRad, 0.0, 1.0) * mn * 0.5;
     vec2 b = max(uBox * 0.5 - vec2(r), vec2(0.0));
     vec2 q = abs(p) - b;
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-    float aa = max(fwidth(d), 0.00001);
-    fillC = vec4(uFill.rgb, uFill.a * (1.0 - smoothstep(-aa, aa, d)));
+    float aa = max(fwidth(d), 0.00001) + bwS;
+    fillC = vec4(fillRgb, fillA * (1.0 - smoothstep(-aa, aa, d)));
     if (sw > 0.0) {
       float dist;
       if (solid) {
@@ -2434,7 +2461,7 @@ void main() {
         float a = shDashDist(t, L, dl);
         dist = (uCap > 0.5 || dl <= 0.0) ? length(vec2(a, d)) - sw * 0.5 : max(a, abs(d) - sw * 0.5);
       }
-      float aa2 = max(fwidth(dist), 0.00001);
+      float aa2 = max(fwidth(dist), 0.00001) + bwS;
       strC = vec4(uStroke.rgb, uStroke.a * (1.0 - smoothstep(-aa2, aa2, dist)));
     }
   } else if (uKind < 1.5) {
@@ -2449,7 +2476,7 @@ void main() {
       float dd = (uCap > 0.5 || uDash <= 0.0) ? length(vec2(a, p.y)) - sw * 0.5 : max(a, abs(p.y) - sw * 0.5);
       dist = max(dd, ex);
     }
-    float aa2 = max(fwidth(dist), 0.00001);
+    float aa2 = max(fwidth(dist), 0.00001) + bwS;
     strC = vec4(uStroke.rgb, uStroke.a * (1.0 - smoothstep(-aa2, aa2, dist)));
   } else {
     vec2 cell = uBox / max(uGrid, vec2(1.0));
@@ -2458,12 +2485,30 @@ void main() {
     float rr = uDot * 0.5 * min(cell.x, cell.y);
     float dd = length(cp) - rr;
     float inside = step(0.0, pp.x) * step(pp.x, uBox.x) * step(0.0, pp.y) * step(pp.y, uBox.y);
-    float aa2 = max(fwidth(dd), 0.00001);
-    fillC = vec4(uFill.rgb, uFill.a * (1.0 - smoothstep(-aa2, aa2, dd)) * inside);
+    float aa2 = max(fwidth(dd), 0.00001) + bwS;
+    fillC = vec4(fillRgb, fillA * (1.0 - smoothstep(-aa2, aa2, dd)) * inside);
   }
   float a = strC.a + fillC.a * (1.0 - strC.a);
   vec3 rgb = (strC.rgb * strC.a + fillC.rgb * fillC.a * (1.0 - strC.a)) / max(a, 0.0001);
   if (a < 0.002) discard;
+  return vec4(rgb, a);
+}
+`;
+const SHAPE_FRAG = SHAPE_CORE + `
+uniform float uLit;
+uniform float uLitBase;
+uniform int uLN;
+uniform vec3 uLP[8];
+uniform vec3 uLD[8];
+uniform vec3 uLC[8];
+uniform vec4 uLS[8];
+varying vec3 vWP;
+varying vec3 vWN;
+varying vec2 vUv;
+void main() {
+  vec4 shc = weebShapeColor(vUv);
+  vec3 rgb = shc.rgb;
+  float a = shc.a;
   if (uLit > 0.5) {
     vec3 ln = normalize(vWN);
     if (!gl_FrontFacing) ln = -ln;
@@ -2488,7 +2533,7 @@ void main() {
 `;
 const _shapeCol = new THREE.Color();
 function defaultShapeParams() {
-  return { w: 1.2, h: 0.7, radius: 0.15, fillColor: "#ffffff", fillAlpha: 0, strokeColor: "#ffffff", strokeAlpha: 1, strokeW: 0.012, dash: 0, gap: 0, shift: 0, dotSize: 0.5, rot: 0 };
+  return { w: 1.2, h: 0.7, radius: 0.15, fillColor: "#ffffff", fillAlpha: 0, strokeColor: "#ffffff", strokeAlpha: 1, strokeW: 0.012, dash: 0, gap: 0, shift: 0, dotSize: 0.5, rot: 0, fill2Color: "#000000", fill2Alpha: 1, gradAmt: 0, gradAngle: 90, tilt: 0 };
 }
 function shapeLerp(a, b, t) {
   const d = defaultShapeParams(), o = {};
@@ -2499,32 +2544,69 @@ function shapeLerp(a, b, t) {
   });
   return o;
 }
+function shapeUniforms() {
+  return {
+    uBox: { value: new THREE.Vector2(1, 1) }, uSize: { value: new THREE.Vector2(1, 1) }, uKind: { value: 0 }, uRad: { value: 0 },
+    uFill: { value: new THREE.Vector4(1, 1, 1, 0) }, uStroke: { value: new THREE.Vector4(1, 1, 1, 1) }, uSW: { value: 0.01 },
+    uDash: { value: 0 }, uGap: { value: 0 }, uShift: { value: 0 }, uCap: { value: 1 }, uGrid: { value: new THREE.Vector2(8, 4) }, uDot: { value: 0.5 },
+    uFill2: { value: new THREE.Vector4(0, 0, 0, 1) }, uGradDir: { value: new THREE.Vector2(0, 1) }, uGradAmt: { value: 0 }, uGradK: { value: 0 }, uShpBase: { value: 0 },
+    uLit: { value: 0 }, uLitBase: { value: 0.2 }, uLN: { value: 0 },
+    uLP: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLD: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, -1)) },
+    uLC: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLS: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+  };
+}
 function makeShapeMaterial(fade) {
   const m = new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    uniforms: Object.assign({}, fade, {
-      uBox: { value: new THREE.Vector2(1, 1) }, uSize: { value: new THREE.Vector2(1, 1) }, uKind: { value: 0 }, uRad: { value: 0 },
-      uFill: { value: new THREE.Vector4(1, 1, 1, 0) }, uStroke: { value: new THREE.Vector4(1, 1, 1, 1) }, uSW: { value: 0.01 },
-      uDash: { value: 0 }, uGap: { value: 0 }, uShift: { value: 0 }, uCap: { value: 1 }, uGrid: { value: new THREE.Vector2(8, 4) }, uDot: { value: 0.5 },
-      uLit: { value: 0 }, uLitBase: { value: 0.2 }, uLN: { value: 0 },
-      uLP: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLD: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, -1)) },
-      uLC: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLS: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
-    }),
+    uniforms: Object.assign({}, fade, shapeUniforms()),
     vertexShader: SHAPE_VERT,
     fragmentShader: FADE_FRAG_DECL + SHAPE_FRAG,
   });
   m.toneMapped = false;
   return m;
 }
+/* Material 3D de la forma: la misma silueta (SHAPE_CORE) pero sobre un material estándar de three (o el reflector), así recibe las luces
+   reales de la escena, recibe/proyecta sombras y puede reflejar. Se inyecta en el color base; el resto lo hace three. */
+function patchShapePhys(m, shU) {
+  if (!m || (m.userData && m.userData.__shpPatched)) return;
+  m.userData = m.userData || {};
+  m.userData.__shpPatched = true; m.userData.shU = shU; m.userData.__shpRefl = !!m._tDiffuse;
+  const prev = m.onBeforeCompile ? m.onBeforeCompile.bind(m) : null;
+  m.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev(shader, renderer);
+    Object.assign(shader.uniforms, m.userData.shU);
+    shader.vertexShader = "varying vec2 vShpUv;\n" + shader.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\n vShpUv = uv;");
+    shader.fragmentShader = "varying vec2 vShpUv;\nuniform float uShpBase;\n" + SHAPE_CORE + shader.fragmentShader
+      .replace("#include <map_fragment>", "#include <map_fragment>\n{ vec4 shc = weebShapeColor(vShpUv); diffuseColor.rgb = shc.rgb; diffuseColor.a *= shc.a; }")
+      .replace("#include <lights_physical_fragment>", "#include <lights_physical_fragment>\n totalEmissiveRadiance += diffuseColor.rgb * uShpBase;");
+  };
+  m.customProgramCacheKey = () => weebProgKey(m);
+  m.needsUpdate = true;
+}
+function ShapePhysMaterial({ data, fade, matRef }) {
+  const envTex = useStudioEnv();
+  const envCfg = React.useContext(EnvSettingsCtx);
+  const perf = React.useContext(PerfCtx);
+  const shU = useMemo(() => Object.assign({}, fade, shapeUniforms()), [fade]);
+  const refl = (data.reflect || 0) > 0.001 && perf.tier >= 1 && perf.safe < 3 && !(perf.off && perf.off.ref);
+  const setRef = (m) => { if (m) { patchShapePhys(m, shU); patchFadeMaterial(m, fade); } if (matRef) matRef.current = m; };
+  const common = { transparent: true, side: THREE.DoubleSide, roughness: data.rough ?? 0.6, metalness: data.metal ?? 0, envMap: envCfg.enabled ? envTex : null, envMapIntensity: envCfg.intensity };
+  if (refl) {
+    const mob = perf.tier < 2;
+    return <MeshReflectorMaterial ref={setRef} {...common} color="#ffffff" blur={mob ? [0, 0] : [200, 60]} resolution={mob ? 256 : 512} mixBlur={mob ? 0 : 0.6} mixStrength={3 * data.reflect} mixContrast={1} mirror={0} depthScale={0} />;
+  }
+  return <meshStandardMaterial ref={setRef} {...common} />;
+}
 /* Pasa los valores de la pose (sh) y las opciones fijas del objeto (o) al shader y al tamaño del plano. kx / ky = escala extra. */
 function applyShapeUniforms(mat, mesh, o, sh, kx, ky) {
   const d = defaultShapeParams(), g = (k) => (sh && sh[k] != null ? sh[k] : d[k]);
-  const U = mat.uniforms;
+  const U = mat.uniforms || (mat.userData && mat.userData.shU);
+  if (!U) return;
   const kind = o.shapeKind === "line" ? 1 : o.shapeKind === "dots" ? 2 : 0;
   const sw = Math.max(0, g("strokeW"));
   const w = Math.max(0.001, g("w"));
   const h = kind === 1 ? Math.max(0.001, sw) : Math.max(0.001, g("h"));
-  const pad = sw + 0.05;
+  const pad = sw + 0.05 + 3 * (U.uBlr ? U.uBlr.value : 0) * Math.max(Math.min(w, h), 0.25 * Math.max(w, h));
   U.uKind.value = kind;
   U.uBox.value.set(w, h);
   U.uSize.value.set(w + pad, h + pad);
@@ -2538,9 +2620,20 @@ function applyShapeUniforms(mat, mesh, o, sh, kx, ky) {
   U.uDot.value = g("dotSize");
   _shapeCol.set(g("fillColor")); U.uFill.value.set(_shapeCol.r, _shapeCol.g, _shapeCol.b, g("fillAlpha"));
   _shapeCol.set(g("strokeColor")); U.uStroke.value.set(_shapeCol.r, _shapeCol.g, _shapeCol.b, g("strokeAlpha"));
+  _shapeCol.set(g("fill2Color")); U.uFill2.value.set(_shapeCol.r, _shapeCol.g, _shapeCol.b, g("fill2Alpha"));
+  const ga = ((g("gradAngle") || 0) * Math.PI) / 180;
+  U.uGradDir.value.set(Math.cos(ga), Math.sin(ga));
+  U.uGradAmt.value = Math.max(0, Math.min(1, g("gradAmt") || 0));
+  U.uGradK.value = o.shapeGrad === "radial" ? 1 : 0;
+  U.uShpBase.value = o.phys ? (o.litBase ?? 0.05) : 0;
   mesh.scale.set((w + pad) * (kx || 1), (h + pad) * (ky || 1), 1);
+  mesh.rotation.x = ((g("tilt") || 0) * Math.PI) / 180;
   mesh.rotation.z = ((g("rot") || 0) * Math.PI) / 180;
-  applyShapeLights(mat, o.lit, o.litBase);
+  applyShapeLights(mat, o.lit && !o.phys, o.litBase);
+  /* Formas opacas (relleno ≥ 98 %, sin desenfoque ni fundido): escriben profundidad, así una forma que está detrás de otra
+     (una "pared" a 90°, por ejemplo) queda tapada según el ángulo de cámara y no se trasluce. Las translúcidas siguen sin escribir. */
+  const solid = kind === 0 && g("fillAlpha") >= 0.98 && (g("gradAmt") < 0.01 || g("fill2Alpha") >= 0.98) && (!U.uBlr || U.uBlr.value < 0.0005) && (!U.uFadeAmt || U.uFadeAmt.value > 0.99);
+  if (mat.depthWrite !== solid) mat.depthWrite = solid;
 }
 /* Registro de las luces-objeto activas: las formas ("Recibe luz") las leen para iluminarse con su propio shader. */
 const WEEB_LIGHTS = new Map();
@@ -2556,7 +2649,8 @@ function weebLightSet(key, o, pos, lt, li) {
   L.dist = o.lightDistance || 0; L.point = o.lightKind === "point";
 }
 function applyShapeLights(mat, lit, base) {
-  const U = mat.uniforms;
+  const U = mat.uniforms || (mat.userData && mat.userData.shU);
+  if (!U) return;
   U.uLit.value = lit ? 1 : 0;
   if (!lit) return;
   U.uLitBase.value = base ?? 0.2;
@@ -2595,6 +2689,7 @@ function sampleObjectKeyframes(keyframes, progress) {
     sh: a.sh || b.sh ? shapeLerp(a.sh, b.sh, t) : null,
     lt: lerpVec3(a.lt || [0, 0, 0], b.lt || [0, 0, 0], t),
     li: lerp(a.li ?? 1, b.li ?? 1, t),
+    bl: lerp(a.bl || 0, b.bl || 0, t),
     fade: fadeStateFor(a, b, t),
   };
 }
@@ -2603,7 +2698,8 @@ function useObjectTransformRef(keyframes, billboard, own) {
   const groupRef = useRef(null);
   const fade = useMemo(() => makeFadeUniforms(), []);
   const hasFadeOnly = useMemo(() => keyframes.some((k) => k.hidden), [keyframes]);
-  const hasFade = hasFadeOnly;
+  const hasBlur = useMemo(() => keyframes.some((k) => (k.bl || 0) > 0), [keyframes]);
+  const hasFade = hasFadeOnly || hasBlur;
   const base = useRef({ x: 0, y: 0, z: 0, s: 1, sx: 1, sy: 1 });
   const zRef = useRef(null);   // giro en el plano (Z) de carteles/imágenes/videos
   const live = useRef(null);   // posición/escala "reales"; la animación de entrada/salida se suma encima
@@ -2627,6 +2723,7 @@ function useObjectTransformRef(keyframes, billboard, own) {
       g.rotation.y = damp(g.rotation.y, (kf.rotationY * Math.PI) / 180, 4, delta);
     }
     if (hasFade) driveFade(g, state.camera, fade, kf.fade, own);
+    fade.uBlr.value = hasBlur ? Math.max(0, kf.bl || 0) * 0.01 : 0;
     if (zRef.current) zRef.current.rotation.z = damp(zRef.current.rotation.z, ((kf.rz || 0) * Math.PI) / 180, 4, delta);
   });
   return { groupRef, fade, hasFade, live, zRef };
@@ -2969,7 +3066,7 @@ function sharpenTextAlpha(mat) {
   const prev = mat.onBeforeCompile;
   mat.onBeforeCompile = (shader, renderer) => {
     if (prev) prev.call(mat, shader, renderer);
-    shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>", "#include <map_fragment>\n#ifdef USE_MAP\n{ float txA = sampledDiffuseColor.a; vec2 txS = vec2(textureSize(map, 0)); vec2 txD = max(abs(dFdx(vMapUv * txS)), abs(dFdy(vMapUv * txS))); float txC = 1.0 - smoothstep(0.7, 1.4, max(txD.x, txD.y)); float txW = clamp(fwidth(txA) * 0.8, 0.04, 0.5); diffuseColor.a = opacity * mix(txA, smoothstep(0.5 - txW, 0.5 + txW, txA), txC); }\n#endif");
+    shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>", "#include <map_fragment>\n#ifdef USE_MAP\n{ float txA = sampledDiffuseColor.a; vec2 txS = vec2(textureSize(map, 0)); vec2 txD = max(abs(dFdx(vMapUv * txS)), abs(dFdy(vMapUv * txS))); float txC = 1.0 - smoothstep(0.7, 1.4, max(txD.x, txD.y));\n#ifdef WEEB_FADE\n if (uBlr > 0.0005) txC = 0.0;\n#endif\n float txW = clamp(fwidth(txA) * 0.8, 0.04, 0.5); diffuseColor.a = opacity * mix(txA, smoothstep(0.5 - txW, 0.5 + txW, txA), txC); }\n#endif");
   };
   mat.customProgramCacheKey = () => weebProgKey(mat);
   mat.needsUpdate = true;
@@ -3515,14 +3612,17 @@ function SceneObjectShape({ data }) {
   const { groupRef, fade, live } = useObjectTransformRef(data.keyframes, data.billboard);
   const mat = useMemo(() => makeShapeMaterial(fade), [fade]);
   const meshRef = useRef(null);
+  const physRef = useRef(null);
+  const phys = !!data.phys;
   useFrame(() => {
     const kf = live.current;
-    if (kf && meshRef.current) applyShapeUniforms(mat, meshRef.current, data, kf.sh);
+    const m = phys ? physRef.current : mat;
+    if (kf && meshRef.current && m) applyShapeUniforms(m, meshRef.current, data, kf.sh);
   });
   const mesh = (
-    <mesh ref={meshRef} renderOrder={10}>
+    <mesh ref={meshRef} renderOrder={10} castShadow={phys && !!data.shCast} receiveShadow={phys && !!data.shRecv}>
       <planeGeometry args={[1, 1]} />
-      <primitive object={mat} attach="material" />
+      {phys ? <ShapePhysMaterial data={data} fade={fade} matRef={physRef} /> : <primitive object={mat} attach="material" />}
     </mesh>
   );
   return (
@@ -5463,6 +5563,7 @@ function sampleObjectTransform(transformsByStage, progress, stages, easings) {
     sh: ta.sh || tb.sh ? shapeLerp(ta.sh, tb.sh, t) : null,
     lt: lerpVec3(ta.lt || [0, 0, 0], tb.lt || [0, 0, 0], t),
     li: lerp(ta.li ?? 1, tb.li ?? 1, t),
+    bl: lerp(ta.bl || 0, tb.bl || 0, t),
   }, fadeStateFor(ta, tb, t));
 }
 
@@ -5691,12 +5792,17 @@ const FADE_WIPES = { ltr: 1, rtl: 1, wipeUp: 1, wipeDown: 1 };
 const _ANIM_ID = { dx: 0, dy: 0, s: 1, sx: 1, sy: 1, blur: 0 };
 //@@use animFor
 //@@use driveFade
+//@@use SHAPE_CORE
 //@@use SHAPE_VERT
 //@@use SHAPE_FRAG
 //@@use _shapeCol
 //@@use defaultShapeParams
 //@@use shapeLerp
+//@@use shapeUniforms
 //@@use makeShapeMaterial
+//@@use patchShapePhys
+//@@use ShapePhysMaterial
+//@@use PerfCtx
 //@@use applyShapeUniforms
 /* En edición, una pose marcada "invisible" se ve fantasma (10%) para
    poder seguir ubicándola; en Preview se ve el fade real. */
@@ -5713,6 +5819,7 @@ function FadeGroup({ obj, fade, children }) {
     ref.current.scale.set(sx, sy, sz);
     ref.current.position.set(p[0] * (1 - sx) + an.dx, p[1] * (1 - sy) + an.dy, p[2] * (1 - sz));
     driveFade(ref.current, state.camera, fade, { amt, dir, out }, own);
+    fade.uBlr.value = Math.max(0, obj.bl || 0) * 0.01;
   });
   return <group ref={ref}>{children}</group>;
 }
@@ -6082,17 +6189,18 @@ function ObjectPreviewVideo({ obj, fade }) {
 function ObjectPreviewShape({ obj, fade }) {
   const mat = useMemo(() => makeShapeMaterial(fade), [fade]);
   const meshRef = useRef(null);
-  useFrame(() => { if (meshRef.current) applyShapeUniforms(mat, meshRef.current, obj, obj.sh, obj.scale * (obj.sx ?? 1), obj.scale * (obj.sy ?? 1)); });
+  const physRef = useRef(null);
+  const phys = !!obj.phys;
+  useFrame(() => { const m = phys ? physRef.current : mat; if (meshRef.current && m) applyShapeUniforms(m, meshRef.current, obj, obj.sh, obj.scale * (obj.sx ?? 1), obj.scale * (obj.sy ?? 1)); });
   const mesh = (
-    <mesh ref={meshRef} renderOrder={10}
-      position={obj.billboard ? [0, 0, 0] : obj.position}
-      rotation={obj.billboard ? [0, 0, 0] : [0, (obj.rotationY * Math.PI) / 180, 0]}
-    >
+    <mesh ref={meshRef} renderOrder={10} castShadow={phys && !!obj.shCast} receiveShadow={phys && !!obj.shRecv}>
       <planeGeometry args={[1, 1]} />
-      <primitive object={mat} attach="material" />
+      {phys ? <ShapePhysMaterial data={obj} fade={fade} matRef={physRef} /> : <primitive object={mat} attach="material" />}
     </mesh>
   );
-  return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
+  return obj.billboard
+    ? <Billboard position={obj.position}>{mesh}</Billboard>
+    : <group position={obj.position} rotation={[0, (obj.rotationY * Math.PI) / 180, 0]}>{mesh}</group>;
 }
 function ObjectPreviewImage({ obj, fade }) {
   return isSvgUrl(obj.url) ? <ObjectPreviewImageSvg obj={obj} fade={fade} /> : <ObjectPreviewImageRaster obj={obj} fade={fade} />;
@@ -7051,7 +7159,7 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     const kfLines = stages.map((kf, idx) => {
       const t = transforms[kf.id] || { position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" };
       const easing = idx === 0 ? "smooth" : (easings[idx - 1] || "smooth");
-      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
+      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${t.bl ? `, bl: ${fmtNum(t.bl)}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
     }).join("\n");
     if (o.type === "text") {
       return `  {
@@ -7100,6 +7208,13 @@ ${kfLines}
     shapeCap: "${o.shapeCap || "round"}",
     shapeCols: ${Math.max(1, Math.round(o.shapeCols || 8))},
     shapeRows: ${Math.max(1, Math.round(o.shapeRows || 4))},
+    shapeGrad: "${o.shapeGrad === "radial" ? "radial" : "linear"}",
+    phys: ${o.phys ? "true" : "false"},
+    shCast: ${o.shCast ? "true" : "false"},
+    shRecv: ${o.shRecv ? "true" : "false"},
+    reflect: ${fmtNum(o.reflect || 0)},
+    rough: ${fmtNum(o.rough ?? 0.6)},
+    metal: ${fmtNum(o.metal ?? 0)},
     lit: ${o.lit ? "true" : "false"},
     litBase: ${fmtNum(o.litBase ?? 0.2)},
     billboard: ${o.billboard ? "true" : "false"},
@@ -8391,6 +8506,13 @@ function App() {
       return { ...prev, [id]: forObj };
     });
   };
+  const setObjectShapeAll = (id, key, value) => {
+    setObjectTransformsByKf((prev) => {
+      const forObj = { ...prev[id] };
+      Object.keys(forObj).forEach((k) => { forObj[k] = { ...forObj[k], sh: { ...defaultShapeParams(), ...(forObj[k].sh || {}), [key]: value } }; });
+      return { ...prev, [id]: forObj };
+    });
+  };
   const copyObjectTransformFromPrev = (id) => {
     if (stageIndex <= 0) return;
     const prevId = stagesComputed[stageIndex - 1].id;
@@ -9132,6 +9254,39 @@ function App() {
               {kind === "rect" && <Slider label="Redondeo %" min={0} max={100} step={1} value={Math.round(sp("radius") * 100)} onChange={(v) => set("radius")(v / 100)} />}
               {kind === "dots" && <Slider label="Tamaño punto %" min={5} max={100} step={1} value={Math.round(sp("dotSize") * 100)} onChange={(v) => set("dotSize")(v / 100)} />}
               <Slider label="Giro" min={-180} max={180} step={0.5} value={sp("rot")} onChange={set("rot")} />
+              <Slider label="Inclinación (acostar)" min={-90} max={90} step={1} value={sp("tilt")} onChange={set("tilt")} />
+              <div className="tools">
+                <Btn title="Acuesta la forma como un piso (mirando hacia arriba) en todas las poses y apaga el billboard" onClick={() => { setObjectShapeAll(o.id, "tilt", -90); updateObject(o.id, { billboard: false }); }}>Piso (acostar)</Btn>
+                <Btn title="La deja parada como una pared en todas las poses" onClick={() => setObjectShapeAll(o.id, "tilt", 0)}>Pared (parar)</Btn>
+              </div>
+              {kind !== "line" && (
+                <>
+                  <div className="grp-t" style={{ marginTop: 6 }}>Degradé · {currentStageLabel}</div>
+                  <Slider label="Cantidad de degradé" min={0} max={1} step={0.01} value={sp("gradAmt")} onChange={set("gradAmt")} />
+                  {sp("gradAmt") > 0 && (
+                    <>
+                      <SelectRow label="Tipo" value={o.shapeGrad || "linear"} onChange={(v) => updateObject(o.id, { shapeGrad: v })} options={[["linear", "Lineal"], ["radial", "Radial (desde el centro)"]]} />
+                      <ColorRow label="Color 2" value={sp("fill2Color")} onChange={set("fill2Color")} />
+                      <Slider label="Opacidad color 2 %" min={0} max={100} step={1} value={Math.round(sp("fill2Alpha") * 100)} onChange={(v) => set("fill2Alpha")(v / 100)} />
+                      {(o.shapeGrad || "linear") === "linear" && <Slider label="Ángulo" min={-180} max={180} step={1} value={sp("gradAngle")} onChange={set("gradAngle")} />}
+                      <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>El degradé va del «Relleno» al «Color 2» y se anima entre poses. Con opacidad 0 en el color 2 el borde se funde a transparente (útil para un piso que se pierde en la distancia). Ángulo 90 = de abajo hacia arriba.</div>
+                    </>
+                  )}
+                </>
+              )}
+              <div className="grp-t" style={{ marginTop: 6 }}>Material 3D (luces, sombras y reflejo)</div>
+              <Switch checked={!!o.phys} onChange={(v) => updateObject(o.id, { phys: v })} label="Material 3D (luces reales, sombras, reflejo)" />
+              {o.phys && (
+                <>
+                  <Slider label="Rugosidad" min={0} max={1} step={0.01} value={o.rough ?? 0.6} onChange={(v) => updateObject(o.id, { rough: v })} />
+                  <Slider label="Metal" min={0} max={1} step={0.01} value={o.metal ?? 0} onChange={(v) => updateObject(o.id, { metal: v })} />
+                  <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.05} onChange={(v) => updateObject(o.id, { litBase: v })} />
+                  <Switch checked={!!o.shRecv} onChange={(v) => updateObject(o.id, { shRecv: v })} label="Recibe sombras" />
+                  <Switch checked={!!o.shCast} onChange={(v) => updateObject(o.id, { shCast: v })} label="Proyecta sombra" />
+                  <Slider label="Reflejo (0 = sin reflejo)" min={0} max={1} step={0.01} value={o.reflect || 0} onChange={(v) => updateObject(o.id, { reflect: v })} />
+                  <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto la forma se comporta como un modelo 3D: la iluminan todas las luces de la escena (incluidos tus spots), recibe las sombras de los modelos y puede reflejar la escena (pensado para pisos: usá «Piso (acostar)»). El reflejo vuelve a dibujar la escena una vez más, así que conviene en una sola forma por escena y se apaga solo en celulares muy lentos. «Proyecta sombra» usa la silueta rectangular completa de la forma (no el redondeo).</div>
+                </>
+              )}
               {kind !== "line" && <ColorRow label={kind === "dots" ? "Color" : "Relleno"} value={sp("fillColor")} onChange={set("fillColor")} />}
               {kind !== "line" && <Slider label={kind === "dots" ? "Opacidad %" : "Relleno opac. %"} min={0} max={100} step={1} value={Math.round(sp("fillAlpha") * 100)} onChange={(v) => set("fillAlpha")(v / 100)} />}
               {kind !== "dots" && (
@@ -9172,12 +9327,14 @@ function App() {
         )}
         {isModel && <Switch checked={o.shadows !== false} onChange={(v) => updateObject(o.id, { shadows: v })} label="Sombras (proyecta / recibe)" />}
         {!isModel && <Switch checked={!!o.billboard} onChange={(v) => updateObject(o.id, { billboard: v })} label="Billboard (mira a cámara)" />}
-        {(isText || isImage || isShape) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
-        {(isText || isImage || isShape) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
-        {(isText || isImage || isShape) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
+        {(isText || isImage || (isShape && !o.phys)) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
+        {(isText || isImage || (isShape && !o.phys)) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
+        {(isText || isImage || (isShape && !o.phys)) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
         <div className="grp-t" style={{ marginTop: 4 }}>Transformación · {currentStageLabel}</div>
         <Slider label="Escala" min={0.05} max={20} step={0.01} value={t.scale} onChange={(v) => setObjectTransform(o.id, "scale", null, v)} />
         {!isModel && <Slider label="Estirar ancho" min={0.05} max={6} step={0.01} value={t.sx ?? 1} onChange={(v) => setObjectTransform(o.id, "sx", null, v)} />}
+        {!isModel && <Slider label="Desenfoque" min={0} max={30} step={0.1} value={t.bl || 0} onChange={(v) => setObjectTransform(o.id, "bl", null, v)} />}
+        {!isModel && (t.bl || 0) > 0 && <div className="tools"><Btn title="Mismo desenfoque en todas las poses" onClick={() => setObjectAllStages(o.id, "bl", t.bl || 0)}>Desenfoque en todas las poses</Btn><Btn onClick={() => setObjectAllStages(o.id, "bl", 0)}>Quitar en todas</Btn></div>}
         {!isModel && <Slider label="Estirar alto" min={0.05} max={6} step={0.01} value={t.sy ?? 1} onChange={(v) => setObjectTransform(o.id, "sy", null, v)} />}
         <Vec3 label="Posición" value={t.position} onChange={(a, v) => setObjectTransform(o.id, "position", a, v)} />
         {!(!isModel && o.billboard) && <Slider label="Giro Y" min={-180} max={180} step={0.1} value={t.rotationY} onChange={(v) => setObjectTransform(o.id, "rotationY", null, v)} />}
