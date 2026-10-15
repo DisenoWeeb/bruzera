@@ -2531,6 +2531,8 @@ function sampleObjectKeyframes(keyframes, progress) {
     tk: lerp(a.tk || 0, b.tk || 0, t),
     lh: lerp(a.lh || 0, b.lh || 0, t),
     sh: a.sh || b.sh ? shapeLerp(a.sh, b.sh, t) : null,
+    lt: lerpVec3(a.lt || [0, 0, 0], b.lt || [0, 0, 0], t),
+    li: lerp(a.li ?? 1, b.li ?? 1, t),
     fade: fadeStateFor(a, b, t),
   };
 }
@@ -2985,7 +2987,7 @@ function SceneObjectText({ data }) {
   const mesh = (
     <group ref={zRef}><mesh key={geo ? "g" : "p"} renderOrder={10} frustumCulled={!geo} geometry={geo || undefined} scale={[texture.image.width / refH, texture.image.height / refH, 1]}>
       {!geo && <planeGeometry args={[1, 1]} />}
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); sharpenTextAlpha(m); if (hasFade) patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
+      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} matRef={(m) => { discardClearPixels(m); sharpenTextAlpha(m); if (hasFade) patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
     </mesh></group>
   );
   return (
@@ -3397,7 +3399,7 @@ function SceneObjectImageRaster({ data }) {
   const mesh = (
     <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]}>
       <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
+      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} matRef={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
     </mesh></group>
   );
   return (
@@ -3414,7 +3416,7 @@ function SceneObjectImageSvg({ data }) {
   const mesh = (
     <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]}>
       <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
+      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} matRef={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
     </mesh></group>
   );
   return (
@@ -3467,7 +3469,38 @@ function SceneObjectShape({ data }) {
     </group>
   );
 }
+/* Material de texto/imagen: normal (sin luz) o "recibe luz" (reacciona a los spots/luces de la escena).
+   litBase = brillo propio mínimo, para que el cartel no quede negro donde no llega ninguna luz. */
+function TexMaterial({ map, lit, litBase, matRef }) {
+  return lit
+    ? <meshStandardMaterial map={map} emissiveMap={map} emissive="#ffffff" emissiveIntensity={litBase ?? 0.2} roughness={0.9} metalness={0} transparent toneMapped={false} side={THREE.DoubleSide} ref={matRef} />
+    : <meshBasicMaterial map={map} transparent toneMapped={false} ref={matRef} />;
+}
+/* Luz como objeto: spot o punto REAL. Posición, destino y encendido (li: 0 = apagada) se animan entre poses.
+   Siempre queda montada (apagada = intensidad 0) para no recompilar los materiales al prenderla. */
+function SceneObjectLight({ data }) {
+  const { scene } = useThree();
+  const perf = React.useContext(PerfCtx);
+  const ref = useRef(null);
+  const tgt = useMemo(() => new THREE.Object3D(), []);
+  useEffect(() => { scene.add(tgt); return () => { scene.remove(tgt); }; }, [scene, tgt]);
+  useEffect(() => { if (ref.current && data.lightKind !== "point") ref.current.target = tgt; }, [tgt, data.lightKind]);
+  useFrame(() => {
+    const L = ref.current;
+    if (!L) return;
+    const kf = sampleObjectKeyframes(data.keyframes, useScrollStore.getState().smoothProgress);
+    L.position.set(kf.position[0], kf.position[1], kf.position[2]);
+    const lt = kf.lt || [0, 0, 0];
+    tgt.position.set(lt[0], lt[1], lt[2]);
+    L.intensity = (data.lightIntensity ?? 80) * Math.max(0, kf.li ?? 1);
+  });
+  const common = { color: data.lightColor || "#fff4e0", intensity: 0, distance: data.lightDistance || 0, decay: data.lightDecay ?? 2 };
+  const shadow = !!data.lightShadow && perf.tier >= 2 && !IS_MOBILE_VIEW;
+  if (data.lightKind === "point") return <pointLight ref={ref} {...common} castShadow={shadow} />;
+  return <spotLight ref={ref} {...common} angle={Math.min(1.5, Math.max(0.05, ((data.lightAngle ?? 35) * Math.PI) / 180))} penumbra={data.lightPenumbra ?? 0.5} castShadow={shadow} shadow-mapSize={[1024, 1024]} shadow-bias={-0.0004} shadow-normalBias={0.02} />;
+}
 function SceneObject({ data }) {
+  if (data.type === "light") return <SceneObjectLight data={data} />;
   if (data.type === "shape") return <SceneObjectShape data={data} />;
   if (data.type === "text") return <SceneObjectText data={data} />;
   if (data.type === "video") return <SceneObjectVideo data={data} />;
@@ -3502,7 +3535,7 @@ function SceneObjects() {
   );
 }
 OBJECTS.forEach((obj) => {
-  if (obj.type === "text" || obj.type === "video") return; // texto y video no se precargan (el video se baja solo al montarse)
+  if (obj.type === "text" || obj.type === "video" || obj.type === "light") return; // texto y video no se precargan (el video se baja solo al montarse)
   if (obj.type === "image") useTexture.preload(obj.url);
   else useGLTF.preload(obj.url);
 });
@@ -5364,6 +5397,8 @@ function sampleObjectTransform(transformsByStage, progress, stages, easings) {
     tk: lerp(ta.tk || 0, tb.tk || 0, t),
     lh: lerp(ta.lh || 0, tb.lh || 0, t),
     sh: ta.sh || tb.sh ? shapeLerp(ta.sh, tb.sh, t) : null,
+    lt: lerpVec3(ta.lt || [0, 0, 0], tb.lt || [0, 0, 0], t),
+    li: lerp(ta.li ?? 1, tb.li ?? 1, t),
   }, fadeStateFor(ta, tb, t));
 }
 
@@ -5643,6 +5678,7 @@ function FadeGroup({ obj, fade, children }) {
 //@@use BOOK_CSS
 //@@use BookingOverlay
 //@@use lerpOrbit
+//@@use TexMaterial
 //@@use lookLight
 //@@use NaturalFill
 //@@use buildStudioEnvTexture
@@ -5919,7 +5955,7 @@ function ObjectPreviewText({ obj, fade }) {
       rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
     >
       {!geo && <planeGeometry args={[1, 1]} />}
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); sharpenTextAlpha(m); patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
+      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} matRef={(m) => { discardClearPixels(m); sharpenTextAlpha(m); patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
@@ -5935,7 +5971,7 @@ function ObjectPreviewImageRaster({ obj, fade }) {
       rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
     >
       <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
+      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} matRef={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
@@ -5951,7 +5987,7 @@ function ObjectPreviewImageSvg({ obj, fade }) {
       rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
     >
       <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
+      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} matRef={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
@@ -5994,9 +6030,40 @@ function ObjectPreviewShape({ obj, fade }) {
 function ObjectPreviewImage({ obj, fade }) {
   return isSvgUrl(obj.url) ? <ObjectPreviewImageSvg obj={obj} fade={fade} /> : <ObjectPreviewImageRaster obj={obj} fade={fade} />;
 }
+function ObjectPreviewLight({ obj }) {
+  const { scene } = useThree();
+  const ref = useRef(null);
+  const tgt = useMemo(() => new THREE.Object3D(), []);
+  const spot = obj.lightKind !== "point";
+  const lt = obj.lt || [0, 0, 0];
+  const col = obj.lightColor || "#fff4e0";
+  useEffect(() => { scene.add(tgt); return () => { scene.remove(tgt); }; }, [scene, tgt]);
+  useEffect(() => { if (ref.current && spot) ref.current.target = tgt; }, [tgt, spot]);
+  tgt.position.set(lt[0], lt[1], lt[2]);
+  const line = useMemo(() => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: col, dashSize: 0.12, gapSize: 0.1, transparent: true, opacity: 0.7, depthTest: false })), []);
+  useEffect(() => { line.material.color.set(col); }, [col, line]);
+  useEffect(() => { line.geometry.setFromPoints([new THREE.Vector3(obj.position[0], obj.position[1], obj.position[2]), new THREE.Vector3(lt[0], lt[1], lt[2])]); line.computeLineDistances(); }, [line, obj.position[0], obj.position[1], obj.position[2], lt[0], lt[1], lt[2]]);
+  useEffect(() => () => { line.geometry.dispose(); line.material.dispose(); }, [line]);
+  const common = { color: col, intensity: (obj.lightIntensity ?? 80) * Math.max(0, obj.li ?? 1), distance: obj.lightDistance || 0, decay: obj.lightDecay ?? 2 };
+  return (
+    <>
+      {spot
+        ? <spotLight ref={ref} position={obj.position} {...common} angle={Math.min(1.5, Math.max(0.05, ((obj.lightAngle ?? 35) * Math.PI) / 180))} penumbra={obj.lightPenumbra ?? 0.5} castShadow={!!obj.lightShadow} shadow-mapSize={[1024, 1024]} shadow-bias={-0.0004} shadow-normalBias={0.02} />
+        : <pointLight position={obj.position} {...common} castShadow={!!obj.lightShadow} />}
+      {obj.lightHelper && (
+        <>
+          <mesh position={obj.position} renderOrder={999}><sphereGeometry args={[0.09, 14, 14]} /><meshBasicMaterial color={col} depthTest={false} toneMapped={false} /></mesh>
+          {spot && <primitive object={line} renderOrder={999} />}
+          {spot && <mesh position={lt} renderOrder={999}><ringGeometry args={[0.07, 0.1, 20]} /><meshBasicMaterial color={col} depthTest={false} toneMapped={false} side={THREE.DoubleSide} /></mesh>}
+        </>
+      )}
+    </>
+  );
+}
 function ObjectPreview({ obj }) {
   const fade = useMemo(() => makeFadeUniforms(), []);
-  if (obj.type !== "text" && obj.type !== "shape" && !(obj.previewUrl || obj.url)) return null;
+  if (obj.type !== "text" && obj.type !== "shape" && obj.type !== "light" && !(obj.previewUrl || obj.url)) return null;
+  if (obj.type === "light") return <ObjectPreviewLight obj={obj} />;
   let inner;
   if (obj.type === "text") inner = <ObjectPreviewText obj={obj} fade={fade} />;
   else if (obj.type === "shape") inner = <ObjectPreviewShape obj={obj} fade={fade} />;
@@ -6906,7 +6973,7 @@ function generateLoaderCss(loader) {
 }
 
 function generateObjectsCode(objects, transformsByKf, stages, easings) {
-  objects = objects.filter((o) => o.type === "text" || o.type === "shape" || (o.url && o.url.trim()));
+  objects = objects.filter((o) => o.type === "text" || o.type === "shape" || o.type === "light" || (o.url && o.url.trim()));
   const fmtNum = (n) => (Math.abs(n) < 0.0001 ? 0 : Math.round(n * 1000) / 1000);
   const fmtVec = (v) => `[${v.map(fmtNum).join(", ")}]`;
   const esc = (s) => JSON.stringify(s == null ? "" : s);
@@ -6915,7 +6982,7 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     const kfLines = stages.map((kf, idx) => {
       const t = transforms[kf.id] || { position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" };
       const easing = idx === 0 ? "smooth" : (easings[idx - 1] || "smooth");
-      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
+      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
     }).join("\n");
     if (o.type === "text") {
       return `  {
@@ -6932,7 +6999,26 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     textOutline: ${o.textOutline ? "true" : "false"},
     textOutlineColor: "${o.textOutlineColor || "#000000"}",
     textEffect: "${o.textEffect || "none"}",
+    lit: ${o.lit ? "true" : "false"},
+    litBase: ${fmtNum(o.litBase ?? 0.2)},
     billboard: ${o.billboard ? "true" : "false"},
+    keyframes: [
+${kfLines}
+    ],
+  },`;
+    }
+    if (o.type === "light") {
+      return `  {
+    type: "light",
+    lightKind: "${o.lightKind === "point" ? "point" : "spot"}",
+    lightColor: ${JSON.stringify(o.lightColor || "#fff4e0")},
+    lightIntensity: ${fmtNum(o.lightIntensity ?? 80)},
+    lightAngle: ${fmtNum(o.lightAngle ?? 35)},
+    lightPenumbra: ${fmtNum(o.lightPenumbra ?? 0.5)},
+    lightDistance: ${fmtNum(o.lightDistance || 0)},
+    lightDecay: ${fmtNum(o.lightDecay ?? 2)},
+    lightShadow: ${o.lightShadow ? "true" : "false"},
+    billboard: false,
     keyframes: [
 ${kfLines}
     ],
@@ -6967,6 +7053,8 @@ ${kfLines}
     tintAmt: ${fmtNum(o.tintAmt || 0)},
     glassMatch: ${JSON.stringify(o.glassMatch || "")},
     shadows: ${o.shadows === false ? "false" : "true"},
+    lit: ${o.lit ? "true" : "false"},
+    litBase: ${fmtNum(o.litBase ?? 0.2)},
     cornerRadius: ${fmtNum(o.cornerRadius || 0)},
     borderWidth: ${fmtNum(o.borderWidth || 0)},
     borderColor: ${JSON.stringify(o.borderColor || "#ffffff")},
@@ -7299,6 +7387,7 @@ const ICONS = {
   video: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 9.5v5l4.5-2.5z" /></>,
   capture: <><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></>,
   reset: <path d="M4 12a8 8 0 108-8M4 4v5h5" />,
+  light: <><circle cx="12" cy="9" r="4" /><path d="M12 2v1.5M4.5 5l1 1M19.5 5l-1 1M3 9h1.5M19.5 9H21M9.5 15h5M10 18h4" /></>,
   shape: <><rect x="3.5" y="6" width="17" height="12" rx="4.5" /><path d="M7 12h.01M12 12h.01M17 12h.01" /></>,
 };
 function Icon({ name, size = 18 }) {
@@ -8134,12 +8223,14 @@ function App() {
   // Cámara o el Movimiento del personaje — así también pueden moverse
   // a lo largo del scroll y no quedan estáticos.
   const [objects, setObjects] = useState([]);
+  const LIGHT_DEFAULTS = { lightKind: "spot", lightColor: "#fff4e0", lightIntensity: 80, lightAngle: 35, lightPenumbra: 0.5, lightDistance: 0, lightDecay: 2, lightShadow: false };
   const defaultObjectTransform = () => ({ position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" });
   // Al copiar/fijar transformaciones entre poses se conserva la visibilidad
   // (invisible + dirección del fade) propia de cada pose de destino.
   const keepFade = (src, cur) => ({ ...JSON.parse(JSON.stringify(src)), hidden: !!(cur && cur.hidden), fadeDir: (cur && cur.fadeDir) || "ltr" });
   const [objectTransformsByKf, setObjectTransformsByKf] = useState({});
   const [selectedObj, setSelectedObj] = useState(null);
+  const [lightGap, setLightGap] = useState(1.2);
   const [showObjects, setShowObjects] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showFx, setShowFx] = useState(true);
@@ -8151,12 +8242,13 @@ function App() {
     const newId = `obj-${Date.now()}`;
     const used = objects.map((o, k) => o.color || PALETTE[k % PALETTE.length]);
     const color = PALETTE.find((c) => !used.includes(c)) || PALETTE[objects.length % PALETTE.length];
-    const base = { id: newId, label: `${{ model: "Modelo", image: "Imagen", video: "Video", text: "Texto", shape: "Forma" }[type]} ${objects.length + 1}`, type, url: "", previewUrl: null, billboard: type !== "model", visible: true, color };
+    const base = { id: newId, label: `${{ model: "Modelo", image: "Imagen", video: "Video", text: "Texto", shape: "Forma", light: "Luz" }[type]} ${objects.length + 1}`, type, url: "", previewUrl: null, billboard: type !== "model" && type !== "light", visible: true, color };
+    if (type === "light") Object.assign(base, LIGHT_DEFAULTS);
     if (type === "video") Object.assign(base, { loop: true, videoMode: "scroll", scrubFrom: 0, scrubTo: 100 });
     if (type === "shape") Object.assign(base, { shapeKind: "rect", shapeCap: "round", shapeCols: 8, shapeRows: 4 });
     if (type === "text") Object.assign(base, { text: "Texto", textEffect: "none", textColor: "#ffffff", fontFamily: "'Inter', sans-serif", fontWeight: 600, textAlign: "center", textOutline: false, textOutlineColor: "#000000", textGradient: { on: false, colors: ["#6ee7f9", "#a78bfa"], angle: 0 }, letterSpacing: 0, lineHeight: 1.2, wordStyles: {} });
     setObjects((prev) => [...prev, base]);
-    setObjectTransformsByKf((prev) => ({ ...prev, [newId]: Object.fromEntries(stagesComputed.map((st) => [st.id, defaultObjectTransform()])) }));
+    setObjectTransformsByKf((prev) => ({ ...prev, [newId]: Object.fromEntries(stagesComputed.map((st) => [st.id, type === "light" ? { ...defaultObjectTransform(), position: [0, 2.5, 4], lt: [0, 1, 0], li: 1 } : defaultObjectTransform()])) }));
     setSelectedObj(newId);
   };
   const duplicateObject = (id) => {
@@ -8173,6 +8265,25 @@ function App() {
     setObjectTransformsByKf((prev) => ({ ...prev, [newId]: tr }));
     setSelectedObj(newId);
   };
+  /* Fila de luces: copias de esta luz repartidas a lo largo de X (centradas en la posición actual). Cada copia
+     apunta a su propio tramo (el destino se corre igual que la luz), así iluminan un cartel parejo. */
+  const addLightRow = (id, n, gap) => {
+    const src = objects.find((o) => o.id === id);
+    if (!src || n < 2) return;
+    const clone = (v) => JSON.parse(JSON.stringify(v));
+    const stamp = Date.now();
+    const trSrc = objectTransformsByKf[id] || {};
+    const shifted = (off) => Object.fromEntries(Object.entries(trSrc).map(([sid, t]) => { const c = clone(t); c.position[0] += off; if (c.lt) c.lt[0] += off; return [sid, c]; }));
+    const half = (n - 1) / 2;
+    const newObjs = [], newTr = {};
+    for (let k = 1; k < n; k++) {
+      const nid = `obj-${stamp}-${k}`;
+      const copy = clone(src); copy.id = nid; copy.label = `${src.label} (${k + 1})`; copy.previewUrl = null; copy.color = PALETTE[(objects.length + k) % PALETTE.length];
+      newObjs.push(copy); newTr[nid] = shifted((k - half) * gap);
+    }
+    setObjects((prev) => { const i = prev.findIndex((o) => o.id === id); const nx = [...prev]; nx.splice(i + 1, 0, ...newObjs); return nx; });
+    setObjectTransformsByKf((prev) => ({ ...prev, ...newTr, [id]: shifted(-half * gap) }));
+  };
   const removeObject = (id) => {
     setObjects((prev) => prev.filter((o) => o.id !== id));
     setObjectTransformsByKf((prev) => { const next = { ...prev }; delete next[id]; return next; });
@@ -8182,10 +8293,10 @@ function App() {
     setObjectTransformsByKf((prev) => {
       const forObj = { ...prev[id] };
       const cur = { ...forObj[activeStage] };
-      if (field === "position") {
-        const pos = [...cur.position];
+      if (field === "position" || field === "lt") {
+        const pos = [...(cur[field] || [0, 0, 0])];
         pos["xyz".indexOf(axis)] = value;
-        cur.position = pos;
+        cur[field] = pos;
       } else {
         cur[field] = value;
       }
@@ -8280,6 +8391,9 @@ function App() {
           lineHeight: o.lineHeight ?? 1.2,
           wordStyles: o.wordStyles ?? {},
         };
+      }
+      if (type === "light") {
+        return { ...LIGHT_DEFAULTS, ...o, type: "light", url: "", previewUrl: null, billboard: false };
       }
       if (type === "shape") {
         return { ...o, type: "shape", url: "", previewUrl: null, billboard: o.billboard ?? true, shapeKind: o.shapeKind ?? "rect", shapeCap: o.shapeCap ?? "round", shapeCols: o.shapeCols ?? 8, shapeRows: o.shapeRows ?? 4 };
@@ -8517,10 +8631,10 @@ function App() {
   const scrollProgressNow = sampled ? scrubV : ((stagesComputed.find((st) => st.id === activeStage) || {}).progress || 0);
   const renderObjects = useMemo(() => objects.map((o) => {
     const transforms = objectTransformsByKf[o.id];
-    if (!transforms) return { ...o, ...editFade(defaultObjectTransform()), scrollProgress: scrollProgressNow };
+    if (!transforms) return { ...o, ...editFade(defaultObjectTransform()), scrollProgress: scrollProgressNow, lightHelper: !exporting };
     const t = sampled ? sampleObjectTransform(transforms, scrubV, stagesComputed, easings) : editFade(transforms[activeStage] || defaultObjectTransform());
-    return { ...o, ...t, scrollProgress: scrollProgressNow };
-  }), [objects, objectTransformsByKf, sampled, scrubV, stagesComputed, easings, activeStage, scrollProgressNow]);
+    return { ...o, ...t, scrollProgress: scrollProgressNow, lightHelper: !exporting };
+  }), [objects, objectTransformsByKf, sampled, scrubV, stagesComputed, easings, activeStage, scrollProgressNow, exporting]);
   const sceneCameraActive = exporting || !freeOrbit;
 
   const boneCode = useMemo(() => generateBoneArrayCode(posesByKf, stagesComputed, easings), [posesByKf, stagesComputed, easings]);
@@ -8850,11 +8964,11 @@ function App() {
 
   const renderObjectEditor = (o, idx) => {
     const c = colorOf(o, idx);
-    const isImage = o.type === "image", isVideo = o.type === "video", isText = o.type === "text", isShape = o.type === "shape", isModel = !isImage && !isVideo && !isText && !isShape;
+    const isImage = o.type === "image", isVideo = o.type === "video", isText = o.type === "text", isShape = o.type === "shape", isLight = o.type === "light", isModel = !isImage && !isVideo && !isText && !isShape && !isLight;
     const t = (objectTransformsByKf[o.id] && objectTransformsByKf[o.id][activeStage]) || defaultObjectTransform();
     const mismatch = (isModel && /\.(svg|png|jpe?g|webp|mp4|webm)$/i.test(o.url)) || (isImage && /\.(glb|mp4|webm)$/i.test(o.url)) || (isVideo && /\.(glb|svg|png|jpe?g|webp)$/i.test(o.url));
-    return (
-      <div className="oed" style={{ "--oc": c }}>
+    const head = (
+      <>
         <div className="oed-h">
           <span className="odot" />
           <input type="text" className="oname-in" value={o.label} onChange={(e) => updateObject(o.id, { label: e.target.value })} />
@@ -8862,7 +8976,44 @@ function App() {
             {PALETTE.map((p) => <option key={p} value={p} style={{ color: p }}>●</option>)}
           </select>
         </div>
-        <Seg value={o.type || "model"} onChange={(v) => setObjectType(o.id, v)} options={[["model", "Modelo"], ["image", "Imagen / SVG"], ["video", "Video"], ["text", "Texto"], ["shape", "Forma"]]} />
+        <Seg value={o.type || "model"} onChange={(v) => setObjectType(o.id, v)} options={[["model", "Modelo"], ["image", "Imagen / SVG"], ["video", "Video"], ["text", "Texto"], ["shape", "Forma"], ["light", "Luz"]]} />
+      </>
+    );
+    if (isLight) {
+      const spot = o.lightKind !== "point";
+      const total = objects.filter((x) => x.type === "light").length;
+      return (
+        <div className="oed" style={{ "--oc": c }}>
+          {head}
+          <Seg value={spot ? "spot" : "point"} onChange={(v) => updateObject(o.id, { lightKind: v })} options={[["spot", "Spot (haz dirigido)"], ["point", "Punto (todas direcciones)"]]} />
+          <ColorRow label="Color" value={o.lightColor || "#fff4e0"} onChange={(v) => updateObject(o.id, { lightColor: v })} />
+          <Slider label="Intensidad" min={0} max={400} step={1} value={o.lightIntensity ?? 80} onChange={(v) => updateObject(o.id, { lightIntensity: v })} />
+          {spot && <Slider label="Apertura del haz °" min={5} max={80} step={1} value={o.lightAngle ?? 35} onChange={(v) => updateObject(o.id, { lightAngle: v })} />}
+          {spot && <Slider label="Borde suave" min={0} max={1} step={0.01} value={o.lightPenumbra ?? 0.5} onChange={(v) => updateObject(o.id, { lightPenumbra: v })} />}
+          <Slider label="Alcance (0 = sin límite)" min={0} max={60} step={0.5} value={o.lightDistance || 0} onChange={(v) => updateObject(o.id, { lightDistance: v })} />
+          <Switch checked={!!o.lightShadow} onChange={(v) => updateObject(o.id, { lightShadow: v })} label="Proyecta sombra (pesa: usar en 1 o 2 luces)" />
+          <div className="grp-t" style={{ marginTop: 6 }}>Posición y destino · {currentStageLabel}</div>
+          <Vec3 label="Luz en" value={t.position} onChange={(a2, v) => setObjectTransform(o.id, "position", a2, v)} />
+          {spot && <Vec3 label="Apunta a" value={t.lt || [0, 0, 0]} onChange={(a2, v) => setObjectTransform(o.id, "lt", a2, v)} />}
+          <Slider label="Encendido en esta pose" min={0} max={2} step={0.01} value={t.li ?? 1} onChange={(v) => setObjectTransform(o.id, "li", null, v)} />
+          <div className="tools">
+            <Btn onClick={() => setObjectTransform(o.id, "li", null, 0)}>Apagar aquí</Btn>
+            <Btn onClick={() => setObjectTransform(o.id, "li", null, 1)}>Encender (100%)</Btn>
+            <Btn title="Apagada en todas las poses" onClick={() => setObjectAllStages(o.id, "li", 0)}>Apagar en todas</Btn>
+            <Btn title="Encendida en todas las poses" onClick={() => setObjectAllStages(o.id, "li", 1)}>Encender en todas</Btn>
+          </div>
+          <div className="grp-t" style={{ marginTop: 6 }}>Fila de luces</div>
+          <Slider label="Separación" min={0.2} max={6} step={0.1} value={lightGap} onChange={setLightGap} />
+          <div className="tools">
+            {[3, 4, 5, 6].map((n) => <Btn key={n} title={`Crea ${n - 1} copias y reparte las ${n} en fila, centradas en esta luz`} onClick={() => addLightRow(o.id, n, lightGap)}>Fila de {n}</Btn>)}
+          </div>
+          <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Las luces iluminan modelos 3D (.glb), el personaje, y los textos / imágenes que tengan prendido «Recibe luz». La posición, el destino y el encendido cambian entre poses y se animan con el scroll: apagá una luz en una pose y prendela en otra para que se encienda al scrollear. Para que los spots se noten, bajá la «Luz principal» y el «Ambiente» (pestaña Cámara). Línea punteada en el visor = hacia dónde apunta. Tenés {total} luz{total === 1 ? "" : "es"}; hasta 8 va bien, más pesa en celulares.</div>
+        </div>
+      );
+    }
+    return (
+      <div className="oed" style={{ "--oc": c }}>
+        {head}
         {isText ? (
           <TextStyleEditor o={o} updateObject={updateObject} />
         ) : isShape ? null : (
@@ -8950,6 +9101,9 @@ function App() {
         )}
         {isModel && <Switch checked={o.shadows !== false} onChange={(v) => updateObject(o.id, { shadows: v })} label="Sombras (proyecta / recibe)" />}
         {!isModel && <Switch checked={!!o.billboard} onChange={(v) => updateObject(o.id, { billboard: v })} label="Billboard (mira a cámara)" />}
+        {(isText || isImage) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
+        {(isText || isImage) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
+        {(isText || isImage) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
         <div className="grp-t" style={{ marginTop: 4 }}>Transformación · {currentStageLabel}</div>
         <Slider label="Escala" min={0.05} max={20} step={0.01} value={t.scale} onChange={(v) => setObjectTransform(o.id, "scale", null, v)} />
         {!isModel && <Slider label="Estirar ancho" min={0.05} max={6} step={0.01} value={t.sx ?? 1} onChange={(v) => setObjectTransform(o.id, "sx", null, v)} />}
@@ -9503,6 +9657,7 @@ function App() {
                   <Btn icon="video" onClick={() => addObject("video")}>Video</Btn>
                   <Btn icon="text" onClick={() => addObject("text")}>Texto</Btn>
                   <Btn icon="shape" onClick={() => addObject("shape")}>Forma</Btn>
+                  <Btn icon="light" onClick={() => addObject("light")}>Luz</Btn>
                   <span className="grow" />
                   <IBtn icon="copy" title="Todos desde la pose anterior" disabled={stageIndex <= 0 || !objects.length} onClick={copyAllObjectTransformsFromPrev} />
                   <IBtn icon="pin" title="Fijar todos en todas las poses" disabled={!objects.length} onClick={applyAllObjectTransformsToAllStages} />
@@ -9511,7 +9666,7 @@ function App() {
                 <div className="outliner">
                   {objects.map((o, i) => (objOnlyVisible && !isVisibleHere(o) && !(selObj && selObj.id === o.id)) ? null : (
                     <div key={o.id} className={`orow ${selObj && selObj.id === o.id ? "sel" : ""} ${o.visible && !(objectTransformsByKf[o.id] && objectTransformsByKf[o.id][activeStage] && objectTransformsByKf[o.id][activeStage].hidden) ? "" : "off"}`} style={{ "--oc": colorOf(o, i) }} onClick={() => setSelectedObj(o.id)}>
-                      <span className="oico"><Icon name={o.type === "text" ? "text" : o.type === "shape" ? "shape" : o.type === "image" ? "image" : o.type === "video" ? "video" : "cube"} size={15} /></span>
+                      <span className="oico"><Icon name={o.type === "text" ? "text" : o.type === "shape" ? "shape" : o.type === "light" ? "light" : o.type === "image" ? "image" : o.type === "video" ? "video" : "cube"} size={15} /></span>
                       <span className="oname">{o.label}</span>
                       <button className="mini" title="Visible" onClick={(e) => { e.stopPropagation(); updateObject(o.id, { visible: !o.visible }); }}><Icon name={o.visible ? "eye" : "eyeoff"} size={14} /></button>
                       <button className="mini" title="Duplicar (usa el mismo archivo)" onClick={(e) => { e.stopPropagation(); duplicateObject(o.id); }}><Icon name="copy" size={14} /></button>
