@@ -2688,6 +2688,7 @@ function sampleObjectKeyframes(keyframes, progress) {
     sy: lerp(a.sy ?? 1, b.sy ?? 1, t),
     rv: lerp(a.rv ?? 1, b.rv ?? 1, t),
     rz: lerp(a.rz || 0, b.rz || 0, t),
+    rx: lerp(a.rx || 0, b.rx || 0, t),
     tk: lerp(a.tk || 0, b.tk || 0, t),
     lh: lerp(a.lh || 0, b.lh || 0, t),
     sh: a.sh || b.sh ? shapeLerp(a.sh, b.sh, t) : null,
@@ -2725,7 +2726,9 @@ function useObjectTransformRef(keyframes, billboard, own) {
     g.position.set(b.x + an.dx, b.y + an.dy, b.z);
     g.scale.set(b.s * b.sx * an.s * an.sx, b.s * b.sy * an.s * an.sy, b.s * an.s);
     if (!billboard) {
+      g.rotation.order = "YXZ";
       g.rotation.y = damp(g.rotation.y, (kf.rotationY * Math.PI) / 180, 4, delta);
+      g.rotation.x = damp(g.rotation.x, ((kf.rx || 0) * Math.PI) / 180, 4, delta);   // inclinación (acostar como piso)
     }
     if (hasFade) driveFade(g, state.camera, fade, kf.fade, own);
     fade.uBlr.value = hasBlur ? Math.max(0, kf.bl || 0) * 0.01 : 0;
@@ -3146,12 +3149,13 @@ function SceneObjectText({ data }) {
     const prog = Math.max(0, Math.min(1, (k.fade ? k.fade.amt : 1) * (k.rv ?? 1)));
     driveTextAnim(ta, info, effId, prog, k.tk, k.lh, data.textAlign);
   });
+  const sd = useAlphaDepth(texture, !!data.shCast);
   if (!texture) return <group ref={groupRef} />;
   const refH = texture.userData.refH || texture.image.height;
   const mesh = (
-    <group ref={zRef}><mesh key={geo ? "g" : "p"} renderOrder={10} frustumCulled={!geo} geometry={geo || undefined} scale={[texture.image.width / refH, texture.image.height / refH, 1]}>
+    <group ref={zRef}><mesh key={geo ? "g" : "p"} renderOrder={10} frustumCulled={!geo} geometry={geo || undefined} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined} scale={[texture.image.width / refH, texture.image.height / refH, 1]}>
       {!geo && <planeGeometry args={[1, 1]} />}
-      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} matRef={(m) => { discardClearPixels(m); sharpenTextAlpha(m); if (hasFade) patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
+      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} shadowCut={!!data.shCast} matRef={(m) => { discardClearPixels(m); sharpenTextAlpha(m); if (hasFade) patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
     </mesh></group>
   );
   return (
@@ -3560,10 +3564,11 @@ function SceneObjectImageRaster({ data }) {
   const texture = useTexture(data.url);
   const aspect = texture.image ? texture.image.width / texture.image.height : 1;
   const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const sd = useAlphaDepth(texture, !!data.shCast);
   const mesh = (
-    <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]}>
+    <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined}>
       <planeGeometry args={[1, 1]} />
-      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} matRef={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
+      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} shadowCut={!!data.shCast} matRef={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
     </mesh></group>
   );
   return (
@@ -3575,12 +3580,13 @@ function SceneObjectImageRaster({ data }) {
 function SceneObjectImageSvg({ data }) {
   const texture = useHiResSvgTexture(data.url, 3072);
   const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const sd = useAlphaDepth(texture, !!data.shCast);
   if (!texture) return <group ref={groupRef} />;
   const aspect = texture.image.width / texture.image.height;
   const mesh = (
-    <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]}>
+    <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined}>
       <planeGeometry args={[1, 1]} />
-      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} matRef={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
+      <TexMaterial map={texture} lit={data.lit} litBase={data.litBase} shadowCut={!!data.shCast} matRef={(m) => { discardClearPixels(m); if (hasFade) patchFadeMaterial(m, fade); patchMediaMaterial(m, data, aspect); }} />
     </mesh></group>
   );
   return (
@@ -3894,10 +3900,17 @@ function SceneObjectShape({ data }) {
 }
 /* Material de texto/imagen: normal (sin luz) o "recibe luz" (reacciona a los spots/luces de la escena).
    litBase = brillo propio mínimo, para que el cartel no quede negro donde no llega ninguna luz. */
-function TexMaterial({ map, lit, litBase, matRef }) {
+/* Sombra de textos / imágenes: la silueta sale de la transparencia de la textura (no del rectángulo). */
+function useAlphaDepth(map, on) {
+  return useMemo(() => {
+    if (!on || !map) return null;
+    return { depth: new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map, alphaTest: 0.5 }), dist: new THREE.MeshDistanceMaterial({ map, alphaTest: 0.5 }) };
+  }, [map, on]);
+}
+function TexMaterial({ map, lit, litBase, matRef, shadowCut }) {
   return lit
-    ? <meshStandardMaterial map={map} emissiveMap={map} emissive="#ffffff" emissiveIntensity={litBase ?? 0.2} roughness={0.9} metalness={0} transparent toneMapped={false} side={THREE.DoubleSide} ref={matRef} />
-    : <meshBasicMaterial map={map} transparent toneMapped={false} ref={matRef} />;
+    ? <meshStandardMaterial map={map} emissiveMap={map} emissive="#ffffff" emissiveIntensity={litBase ?? 0.2} roughness={0.9} metalness={0} transparent alphaTest={shadowCut ? 0.1 : 0} toneMapped={false} side={THREE.DoubleSide} shadowSide={THREE.DoubleSide} ref={matRef} />
+    : <meshBasicMaterial map={map} transparent alphaTest={shadowCut ? 0.1 : 0} toneMapped={false} shadowSide={THREE.DoubleSide} ref={matRef} />;
 }
 /* Luz como objeto: spot o punto REAL. Posición, destino y encendido (li: 0 = apagada) se animan entre poses.
    Siempre queda montada (apagada = intensidad 0) para no recompilar los materiales al prenderla. */
@@ -5820,6 +5833,7 @@ function sampleObjectTransform(transformsByStage, progress, stages, easings) {
     sy: lerp(ta.sy ?? 1, tb.sy ?? 1, t),
     rv: lerp(ta.rv ?? 1, tb.rv ?? 1, t),
     rz: lerp(ta.rz || 0, tb.rz || 0, t),
+    rx: lerp(ta.rx || 0, tb.rx || 0, t),
     tk: lerp(ta.tk || 0, tb.tk || 0, t),
     lh: lerp(ta.lh || 0, tb.lh || 0, t),
     sh: ta.sh || tb.sh ? shapeLerp(ta.sh, tb.sh, t) : null,
@@ -6120,6 +6134,7 @@ function FadeGroup({ obj, fade, children }) {
 //@@use BOOK_CSS
 //@@use BookingOverlay
 //@@use lerpOrbit
+//@@use useAlphaDepth
 //@@use TexMaterial
 //@@use WEEB_LIGHTS
 //@@use weebLightSet
@@ -6232,7 +6247,7 @@ function ObjectPreviewModel({ obj, fade }) {
   // La posición/escala/giro van en un grupo (no en el modelo) para que el piso reflectante, que se
   // dibuja como hermano del modelo, los herede igual.
   return (
-    <group scale={obj.scale} position={obj.position} rotation={[0, (obj.rotationY * Math.PI) / 180, 0]}>
+    <group scale={obj.scale} position={obj.position} rotation={eulYXZ(obj.rx, obj.rotationY, 0)}>
       <primitive object={scene} />
       <ReflectorFloors scene={scene} enabled={fl.enabled !== false} strength={fl.strength ?? 0.5}
         mobile={false} contact={!!fl.contact} contactOpacity={fl.contactOpacity ?? 0.75} grade={gradeOf(obj)} glow={obj.glow || 0} />
@@ -6391,16 +6406,17 @@ function ObjectPreviewText({ obj, fade }) {
     const prog = obj.editGhost ? 1 : Math.max(0, Math.min(1, (obj.fadeAmt == null ? 1 : obj.fadeAmt) * (obj.rv ?? 1)));
     driveTextAnim(ta, info, effId, prog, obj.tk, obj.lh, obj.textAlign);
   });
+  const sd = useAlphaDepth(texture, !!obj.shCast);
   if (!texture) return null;
   const refH = texture.userData.refH || texture.image.height;
   const mesh = (
-    <mesh key={geo ? "g" : "p"} renderOrder={10} frustumCulled={!geo} geometry={geo || undefined}
+    <mesh key={geo ? "g" : "p"} renderOrder={10} frustumCulled={!geo} geometry={geo || undefined} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined}
       scale={[(obj.scale * (obj.sx ?? 1) * texture.image.width) / refH, (obj.scale * (obj.sy ?? 1) * texture.image.height) / refH, 1]}
       position={obj.billboard ? [0, 0, 0] : obj.position}
-      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
+      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : eulYXZ(obj.rx, obj.rotationY, obj.rz)}
     >
       {!geo && <planeGeometry args={[1, 1]} />}
-      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} matRef={(m) => { discardClearPixels(m); sharpenTextAlpha(m); patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
+      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} shadowCut={!!obj.shCast} matRef={(m) => { discardClearPixels(m); sharpenTextAlpha(m); patchFadeMaterial(m, fade); if (geo) patchTextAnimMaterial(m, ta); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
@@ -6409,30 +6425,32 @@ function ObjectPreviewText({ obj, fade }) {
 function ObjectPreviewImageRaster({ obj, fade }) {
   const texture = useTexture(obj.previewUrl || obj.url);
   const aspect = texture.image ? texture.image.width / texture.image.height : 1;
+  const sd = useAlphaDepth(texture, !!obj.shCast);
   const mesh = (
-    <mesh renderOrder={10}
+    <mesh renderOrder={10} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined}
       scale={[obj.scale * (obj.sx ?? 1) * aspect, obj.scale * (obj.sy ?? 1), 1]}
       position={obj.billboard ? [0, 0, 0] : obj.position}
-      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
+      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : eulYXZ(obj.rx, obj.rotationY, obj.rz)}
     >
       <planeGeometry args={[1, 1]} />
-      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} matRef={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
+      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} shadowCut={!!obj.shCast} matRef={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
 }
 function ObjectPreviewImageSvg({ obj, fade }) {
   const texture = useHiResSvgTexture(obj.previewUrl || obj.url);
+  const sd = useAlphaDepth(texture, !!obj.shCast);
   if (!texture) return null;
   const aspect = texture.image.width / texture.image.height;
   const mesh = (
-    <mesh renderOrder={10}
+    <mesh renderOrder={10} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined}
       scale={[obj.scale * (obj.sx ?? 1) * aspect, obj.scale * (obj.sy ?? 1), 1]}
       position={obj.billboard ? [0, 0, 0] : obj.position}
-      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
+      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : eulYXZ(obj.rx, obj.rotationY, obj.rz)}
     >
       <planeGeometry args={[1, 1]} />
-      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} matRef={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
+      <TexMaterial map={texture} lit={obj.lit} litBase={obj.litBase} shadowCut={!!obj.shCast} matRef={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
     </mesh>
   );
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
@@ -6449,7 +6467,7 @@ function ObjectPreviewVideo({ obj, fade }) {
     <mesh renderOrder={10}
       scale={[obj.scale * (obj.sx ?? 1) * aspect, obj.scale * (obj.sy ?? 1), 1]}
       position={obj.billboard ? [0, 0, 0] : obj.position}
-      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : [0, (obj.rotationY * Math.PI) / 180, ((obj.rz || 0) * Math.PI) / 180]}
+      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : eulYXZ(obj.rx, obj.rotationY, obj.rz)}
     >
       <planeGeometry args={[1, 1]} />
       <meshBasicMaterial map={texture} transparent toneMapped={false} ref={(m) => { discardClearPixels(m); patchFadeMaterial(m, fade); patchMediaMaterial(m, obj, aspect); }} />
@@ -6476,6 +6494,7 @@ function ObjectPreviewShape({ obj, fade }) {
 function ObjectPreviewImage({ obj, fade }) {
   return isSvgUrl(obj.url) ? <ObjectPreviewImageSvg obj={obj} fade={fade} /> : <ObjectPreviewImageRaster obj={obj} fade={fade} />;
 }
+function eulYXZ(rx, ry, rz) { return new THREE.Euler(((rx || 0) * Math.PI) / 180, ((ry || 0) * Math.PI) / 180, ((rz || 0) * Math.PI) / 180, "YXZ"); }
 function ObjectPreviewSmoke({ obj }) {
   const { camera } = useThree();
   const mat = useMemo(() => makeSmokeMaterial(), []);
@@ -7451,7 +7470,7 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     const kfLines = stages.map((kf, idx) => {
       const t = transforms[kf.id] || { position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" };
       const easing = idx === 0 ? "smooth" : (easings[idx - 1] || "smooth");
-      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${t.bl ? `, bl: ${fmtNum(t.bl)}` : ""}${o.type === "smoke" ? `, sm: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultSmokeParams(), ...(t.sm || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 1000) / 1000 : v])))}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
+      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.rx ? `, rx: ${fmtNum(t.rx)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${t.bl ? `, bl: ${fmtNum(t.bl)}` : ""}${o.type === "smoke" ? `, sm: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultSmokeParams(), ...(t.sm || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 1000) / 1000 : v])))}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
     }).join("\n");
     if (o.type === "text") {
       return `  {
@@ -7470,6 +7489,7 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     textEffect: "${o.textEffect || "none"}",
     lit: ${o.lit ? "true" : "false"},
     litBase: ${fmtNum(o.litBase ?? 0.2)},
+    shCast: ${o.shCast ? "true" : "false"},
     billboard: ${o.billboard ? "true" : "false"},
     keyframes: [
 ${kfLines}
@@ -7524,6 +7544,7 @@ ${kfLines}
     metal: ${fmtNum(o.metal ?? 0)},
     lit: ${o.lit ? "true" : "false"},
     litBase: ${fmtNum(o.litBase ?? 0.2)},
+    shCast: ${o.shCast ? "true" : "false"},
     billboard: ${o.billboard ? "true" : "false"},
     keyframes: [
 ${kfLines}
@@ -8835,6 +8856,13 @@ function App() {
       return { ...prev, [id]: forObj };
     });
   };
+  const setObjectRxAll = (id, value) => {
+    setObjectTransformsByKf((prev) => {
+      const forObj = { ...prev[id] };
+      Object.keys(forObj).forEach((k) => { forObj[k] = { ...forObj[k], rx: value }; });
+      return { ...prev, [id]: forObj };
+    });
+  };
   const setObjectSmokeAllStages = (id, key, value) => {
     setObjectTransformsByKf((prev) => {
       const forObj = { ...prev[id] };
@@ -9734,6 +9762,17 @@ function App() {
         {!isModel && <Slider label="Estirar alto" min={0.05} max={6} step={0.01} value={t.sy ?? 1} onChange={(v) => setObjectTransform(o.id, "sy", null, v)} />}
         <Vec3 label="Posición" value={t.position} onChange={(a, v) => setObjectTransform(o.id, "position", a, v)} />
         {!(!isModel && o.billboard) && <Slider label="Giro Y" min={-180} max={180} step={0.1} value={t.rotationY} onChange={(v) => setObjectTransform(o.id, "rotationY", null, v)} />}
+        {(
+          <>
+            <Slider label="Inclinación (acostar)" min={-90} max={90} step={1} value={t.rx || 0} onChange={(v) => setObjectTransform(o.id, "rx", null, v)} />
+            <div className="tools">
+              <Btn title="Lo acuesta como un piso (mirando hacia arriba) en todas las poses; apaga el billboard" onClick={() => { setObjectRxAll(o.id, -90); if (!isModel) updateObject(o.id, { billboard: false }); }}>Piso (acostar)</Btn>
+              <Btn title="Lo deja parado en todas las poses" onClick={() => setObjectRxAll(o.id, 0)}>Parado</Btn>
+            </div>
+          </>
+        )}
+        {(isText || isImage) && o.billboard && <div style={{ fontSize: 10.5, opacity: 0.6 }}>Para acostar o girar este elemento, apagá «Billboard (mira a cámara)».</div>}
+        {(isText || isImage) && <Switch checked={!!o.shCast} onChange={(v) => updateObject(o.id, { shCast: v })} label="Proyecta sombra (con la forma de las letras; la reciben formas con Material 3D y modelos)" />}
         {!isModel && !isShape && (
           <>
             <Slider label="Giro Z (en el plano)" min={-180} max={180} step={1} value={t.rz || 0} onChange={(v) => setObjectTransform(o.id, "rz", null, v)} />
