@@ -8662,6 +8662,16 @@ function App() {
 
 
   const [scrub, setScrub] = useState(0);
+  /* Red de seguridad: si el navegador pierde el contexto WebGL (GPU saturada) el visor se vuelve a armar solo,
+     y el proyecto se guarda automático en este navegador para poder recuperarlo si la pestaña se recarga. */
+  const [canvasKey, setCanvasKey] = useState(0);
+  const [recover, setRecover] = useState(() => {
+    try {
+      if (document.getElementById("embedded-project-b64")?.textContent.trim()) return null;
+      const t = localStorage.getItem("weeb-autosave");
+      return t ? { at: (JSON.parse(t).savedAt) || "", text: t } : null;
+    } catch (e) { return null; }
+  });
   const [exportT, setExportT] = useState(null);      // progreso fijado por el exportador de video (null = inactivo)
   const [vidBox, setVidBox] = useState(null);        // tamano (px) al que se estira el visor mientras se graba
   const [vidFormat, setVidFormat] = useState("story");
@@ -9264,6 +9274,18 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (recover) return;
+    const id = setTimeout(() => {
+      try { localStorage.setItem("weeb-autosave", JSON.stringify(buildProjectSnapshot())); } catch (e) { /* sin espacio: se ignora */ }
+    }, 2500);
+    return () => clearTimeout(id);
+  });
+  const onCanvasCreated = ({ gl }) => {
+    const cv = gl.domElement;
+    cv.addEventListener("webglcontextlost", (e) => { e.preventDefault(); }, false);
+    cv.addEventListener("webglcontextrestored", () => { setTimeout(() => setCanvasKey((k) => k + 1), 400); }, false);
+  };
   const saveProject = () => {
     const project = buildProjectSnapshot();
     const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
@@ -9759,13 +9781,20 @@ function App() {
     <>
       <div className="viewport" ref={viewportRef}
         style={showFx ? { background: backgroundCss(renderFx.background) } : undefined}>
+        {recover && (
+          <div style={{ position: "absolute", left: 12, right: 12, top: 44, zIndex: 30, background: "#2b1d4d", border: "1px solid #a78bfa", borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 13, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ flex: 1, minWidth: 180 }}>Hay un trabajo guardado automáticamente{recover.at ? " (" + new Date(recover.at).toLocaleString() + ")" : ""}. ¿Lo recuperás?</span>
+            <span className="btn" onClick={() => { try { restoreProjectState(JSON.parse(recover.text)); setProjectLoaded(true); setTimeout(() => setProjectLoaded(false), 2500); } catch (e) { setProjectLoadError("No se pudo recuperar el guardado automático."); } setRecover(null); }}>Recuperar</span>
+            <span className="btn" onClick={() => setRecover(null)}>Empezar de cero</span>
+          </div>
+        )}
         <div className="vp-bar">
           {[["Libre", freeOrbit, setFreeOrbit], ["Rotar", autoRotate, setAutoRotate, freeOrbit], ["Objetos", showObjects, setShowObjects], ["Grilla", showGrid, setShowGrid], ["Ambiente", showFx, setShowFx], ["9:16", showMobileFrame, setShowMobileFrame]]
             .filter((c) => c[3] === undefined || c[3])
             .map(([t, on, set]) => <span key={t} className={`vchip ${on ? "on" : ""}`} onClick={() => set(!on)}>{t}</span>)}
         </div>
         <div className="scene-box" style={vidBox ? { position: "fixed", inset: "auto", left: 0, top: 0, width: vidBox.w, height: vidBox.h } : undefined}>
-        <Canvas shadows="soft" camera={{ position: [0, 0.3, 3.5], fov: 35 }} dpr={exporting ? 1 : [1, 2]} gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}>
+        <Canvas key={canvasKey} onCreated={onCanvasCreated} shadows="soft" camera={{ position: [0, 0.3, 3.5], fov: 35 }} dpr={exporting ? 1 : [1, 1.5]} gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}>
           <Scene pose={currentPose} onBonesFound={setFoundMap} cameraTarget={currentCamTarget} sceneCameraActive={sceneCameraActive} autoRotate={!exporting && autoRotate} movement={currentMovement} objects={renderObjects} showObjects={exporting || showObjects} showGrid={!exporting && showGrid} fx={renderFx} showFx={exporting || showFx} orbitRef={orbitRef} liveCameraRef={liveCameraRef} modelUrl={modelUrl} postFx={postFx} charScale={charScale} charCenterY={charCenterY} charAnchorRef={charAnchorRef} trail={trail} reflection={reflection}
             markers={!exporting && section === "objects" && showObjects ? markers : null} selectedObjectId={selectedObj} onSelectObject={setSelectedObj} />
           <VideoExportBridge tag={exportT} bridgeRef={vidBridge} />
