@@ -9766,8 +9766,10 @@ function App() {
           <>
             <Slider label="Inclinación (acostar)" min={-90} max={90} step={1} value={t.rx || 0} onChange={(v) => setObjectTransform(o.id, "rx", null, v)} />
             <div className="tools">
-              <Btn title="Lo acuesta como un piso (mirando hacia arriba) en todas las poses; apaga el billboard" onClick={() => { setObjectRxAll(o.id, -90); if (!isModel) updateObject(o.id, { billboard: false }); }}>Piso (acostar)</Btn>
-              <Btn title="Lo deja parado en todas las poses" onClick={() => setObjectRxAll(o.id, 0)}>Parado</Btn>
+              <Btn title="Lo acuesta como un piso SOLO en esta pose (se anima al pasar a otra pose); apaga el billboard" onClick={() => { setObjectTransform(o.id, "rx", null, -90); if (!isModel) updateObject(o.id, { billboard: false }); }}>Acostar aquí</Btn>
+              <Btn title="Lo deja parado SOLO en esta pose" onClick={() => setObjectTransform(o.id, "rx", null, 0)}>Parar aquí</Btn>
+              <Btn title="Lo acuesta como un piso en TODAS las poses; apaga el billboard" onClick={() => { setObjectRxAll(o.id, -90); if (!isModel) updateObject(o.id, { billboard: false }); }}>Acostar en todas</Btn>
+              <Btn title="Lo deja parado en TODAS las poses" onClick={() => setObjectRxAll(o.id, 0)}>Parar en todas</Btn>
             </div>
           </>
         )}
