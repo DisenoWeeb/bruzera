@@ -2690,6 +2690,7 @@ function sampleObjectKeyframes(keyframes, progress) {
     lt: lerpVec3(a.lt || [0, 0, 0], b.lt || [0, 0, 0], t),
     li: lerp(a.li ?? 1, b.li ?? 1, t),
     bl: lerp(a.bl || 0, b.bl || 0, t),
+    sm: a.sm || b.sm ? smokeLerp(a.sm, b.sm, t) : null,
     fade: fadeStateFor(a, b, t),
   };
 }
@@ -3608,6 +3609,262 @@ function SceneObjectVideo({ data }) {
 function SceneObjectImage({ data }) {
   return isSvgUrl(data.url) ? <SceneObjectImageSvg data={data} /> : <SceneObjectImageRaster data={data} />;
 }
+/* ============================================================
+   HUMO / NIEBLA VOLUMÉTRICA: una caja que se dibuja con raymarching (se "recorre" cada rayo dentro del volumen sumando densidad).
+   La densidad sale de ruido 3D con deformación (remolinos) que sube con el tiempo; se ilumina con tus luces (haces visibles),
+   una luz de relleno propia con sombra interna y luz ambiente. El tiempo es el del video en el MP4 (window.__wsExportTime), así
+   cada exportación da exactamente el mismo humo; en vivo avanza con el reloj. La calidad sube sola al exportar.
+   ============================================================ */
+const SMOKE_VERT = `
+varying vec3 vLP;
+varying vec3 vLC;
+void main() {
+  vLP = position;
+  vLC = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+const SMOKE_FRAG = `
+varying vec3 vLP;
+varying vec3 vLC;
+uniform mat4 uMM;
+uniform mat4 uMMI;
+uniform float uTime;
+uniform float uDens;
+uniform vec3 uCol1;
+uniform vec3 uCol2;
+uniform float uFreq;
+uniform float uRise;
+uniform float uTurb;
+uniform float uCut;
+uniform float uEdge;
+uniform float uSigma;
+uniform float uShape;
+uniform float uSeed;
+uniform vec2 uWind;
+uniform int uSteps;
+uniform int uOct;
+uniform int uShS;
+uniform int uLMax;
+uniform float uAmb;
+uniform float uSun;
+uniform float uLMix;
+uniform float uG;
+uniform float uShadowK;
+uniform vec3 uSunDir;
+uniform int uLN;
+uniform vec3 uLP[8];
+uniform vec3 uLD[8];
+uniform vec3 uLC[8];
+uniform vec4 uLS[8];
+float h31(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+float vn(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = mix(mix(h31(i), h31(i + vec3(1.0, 0.0, 0.0)), f.x), mix(h31(i + vec3(0.0, 1.0, 0.0)), h31(i + vec3(1.0, 1.0, 0.0)), f.x), f.y);
+  float b = mix(mix(h31(i + vec3(0.0, 0.0, 1.0)), h31(i + vec3(1.0, 0.0, 1.0)), f.x), mix(h31(i + vec3(0.0, 1.0, 1.0)), h31(i + vec3(1.0, 1.0, 1.0)), f.x), f.y);
+  return mix(a, b, f.z);
+}
+float fbm3(vec3 p, int oct) {
+  float a = 0.5;
+  float s = 0.0;
+  for (int i = 0; i < 6; i++) {
+    if (i >= oct) break;
+    s += a * vn(p);
+    p = p * 2.03 + vec3(1.7, 9.2, 3.1);
+    a *= 0.5;
+  }
+  return s;
+}
+float dens(vec3 p, float t) {
+  vec3 q = p * uFreq + vec3(uSeed * 7.1, uSeed * 3.3, uSeed * 5.7);
+  q.y -= t * uRise;
+  q.xz -= uWind * t;
+  vec3 w = vec3(vn(q * 0.7 + vec3(0.0, t * 0.15, 0.0)), vn(q * 0.7 + vec3(5.2, 1.3, t * 0.12)), vn(q * 0.7 + vec3(2.1, t * 0.1, 7.7))) - 0.5;
+  q += w * uTurb;
+  float n = fbm3(q, uOct);
+  float y = p.y + 0.5;
+  float prof = 1.0;
+  float cut = uCut;
+  if (uShape > 0.5) {
+    float rad = mix(0.1, 0.5, clamp(y * 0.85 + 0.15 * sqrt(max(y, 0.0)), 0.0, 1.0));
+    float r = length(p.xz) / rad;
+    prof = (1.0 - smoothstep(0.3, 1.0, r)) * smoothstep(0.0, 0.06, y);
+    cut = cut + 0.25 * y;
+  }
+  vec3 e = 0.5 - abs(p);
+  float edge = smoothstep(0.0, uEdge, min(e.x, min(e.y, e.z)));
+  float d = max(n - cut, 0.0) / max(1.0 - cut, 0.05);
+  return d * prof * edge * uDens;
+}
+float hgn(float c, float g) {
+  float g2 = g * g;
+  return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * c, 0.0001), 1.5);
+}
+float shadowDen(vec3 p, vec3 dl, int n) {
+  float s = 0.0;
+  for (int j = 0; j < 6; j++) {
+    if (j >= n) break;
+    s += dens(p + dl * (0.13 * (float(j) + 1.0)), uTime);
+  }
+  return s;
+}
+void main() {
+  vec3 ro = vLC;
+  vec3 rd = normalize(vLP - vLC);
+  vec3 inv = 1.0 / rd;
+  vec3 t0 = (-0.5 - ro) * inv;
+  vec3 t1 = (0.5 - ro) * inv;
+  vec3 tmn = min(t0, t1);
+  vec3 tmx = max(t0, t1);
+  float tn = max(max(tmn.x, tmn.y), max(tmn.z, 0.0));
+  float tf = min(min(tmx.x, tmx.y), tmx.z);
+  if (tf <= tn) discard;
+  vec3 rdw = normalize((uMM * vec4(rd, 0.0)).xyz);
+  float wl = length((uMM * vec4(rd, 0.0)).xyz);
+  float dt = (tf - tn) / float(uSteps);
+  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  vec3 sunL = normalize((uMMI * vec4(uSunDir, 0.0)).xyz);
+  float T = 1.0;
+  vec3 C = vec3(0.0);
+  for (int i = 0; i < 128; i++) {
+    if (i >= uSteps) break;
+    float t = tn + (float(i) + jit) * dt;
+    vec3 p = ro + rd * t;
+    float d = dens(p, uTime);
+    if (d > 0.003) {
+      float a = 1.0 - exp(-d * uSigma * wl * dt);
+      vec3 wp = (uMM * vec4(p, 1.0)).xyz;
+      vec3 base = mix(uCol1, uCol2, clamp(p.y + 0.5, 0.0, 1.0));
+      float lit = uAmb * (0.7 + 0.3 * clamp(p.y + 0.5, 0.0, 1.0));
+      if (uSun > 0.001) {
+        float sh = 1.0;
+        if (uShS > 0) sh = exp(-uShadowK * 0.12 * uSigma * shadowDen(p, sunL, uShS));
+        lit += uSun * sh * (0.55 + 0.45 * hgn(dot(uSunDir, rdw), uG));
+      }
+      vec3 lc = vec3(0.0);
+      for (int k = 0; k < 8; k++) {
+        if (k >= uLN || k >= uLMax) break;
+        vec3 lv = uLP[k] - wp;
+        float ld = max(length(lv), 0.001);
+        vec3 ldir = lv / ld;
+        float cone = uLS[k].w > 0.5 ? 1.0 : smoothstep(uLS[k].x, uLS[k].y, dot(-ldir, uLD[k]));
+        if (cone > 0.001) {
+          float at = 1.0 / (ld * ld);
+          if (uLS[k].z > 0.0) { float rr = clamp(1.0 - pow(ld / uLS[k].z, 4.0), 0.0, 1.0); at *= rr * rr; }
+          float sh = 1.0;
+          if (uShS > 0 && k < 3) sh = exp(-uShadowK * 0.12 * uSigma * shadowDen(p, normalize((uMMI * vec4(ldir, 0.0)).xyz), uShS));
+          lc += uLC[k] * (cone * at * hgn(dot(ldir, rdw), uG) * 0.3183 * sh);
+        }
+      }
+      vec3 col = base * (vec3(lit) + lc * uLMix);
+      C += T * a * col;
+      T *= (1.0 - a);
+      if (T < 0.015) break;
+    }
+  }
+  gl_FragColor = vec4(C, 1.0 - T);
+  #include <colorspace_fragment>
+}
+`;
+function defaultSmokeParams() {
+  return { w: 6, h: 4, d: 6, density: 1, color: "#ece9f5", color2: "#9a94b4", turb: 0.8, rise: 0.35 };
+}
+function smokeLerp(a, b, t) {
+  const d = defaultSmokeParams(), o = {};
+  Object.keys(d).forEach((k) => {
+    const va = a && a[k] != null ? a[k] : d[k], vb = b && b[k] != null ? b[k] : d[k];
+    if (typeof d[k] === "string") o[k] = "#" + new THREE.Color(va).lerp(new THREE.Color(vb), t).getHexString();
+    else o[k] = va + (vb - va) * t;
+  });
+  return o;
+}
+function makeSmokeMaterial() {
+  const m = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, premultipliedAlpha: true, side: THREE.FrontSide,
+    uniforms: {
+      uMM: { value: new THREE.Matrix4() }, uMMI: { value: new THREE.Matrix4() }, uTime: { value: 0 }, uDens: { value: 1 },
+      uCol1: { value: new THREE.Color("#ffffff") }, uCol2: { value: new THREE.Color("#aaaaaa") },
+      uFreq: { value: 2.2 }, uRise: { value: 0.35 }, uTurb: { value: 0.8 }, uCut: { value: 0.4 }, uEdge: { value: 0.25 }, uSigma: { value: 7 },
+      uShape: { value: 0 }, uSeed: { value: 1 }, uWind: { value: new THREE.Vector2(0, 0) },
+      uSteps: { value: 32 }, uOct: { value: 4 }, uShS: { value: 0 }, uLMax: { value: 2 },
+      uAmb: { value: 0.5 }, uSun: { value: 0.8 }, uLMix: { value: 1 }, uG: { value: 0.35 }, uShadowK: { value: 1.5 }, uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.45) },
+      uLN: { value: 0 },
+      uLP: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLD: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, -1)) },
+      uLC: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) }, uLS: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+    },
+    vertexShader: SMOKE_VERT,
+    fragmentShader: SMOKE_FRAG,
+  });
+  m.toneMapped = false;
+  return m;
+}
+const _smkV = new THREE.Vector3();
+/* Calidad: 0 = vista previa liviana / celular · 1 = normal · 2 = alta (MP4) · 3 = máxima (MP4). */
+const SMOKE_Q = [[24, 3, 0, 2], [40, 4, 2, 4], [72, 4, 3, 6], [110, 5, 5, 8]];
+function driveSmoke(mat, mesh, o, sm, camera, delta, st, liveQ) {
+  const d = defaultSmokeParams(), g = (k) => (sm && sm[k] != null ? sm[k] : d[k]);
+  const U = mat.uniforms;
+  const ext = typeof window !== "undefined" ? window.__wsExportTime : null;
+  const sp = o.smokeSpeed ?? 1;
+  if (ext != null) st.t = ext * sp; else st.t += Math.min(delta, 0.1) * sp;
+  const q = ext != null ? Math.max(1, Math.min(3, Math.round(o.smokeQuality ?? 2))) : Math.max(0, Math.min(3, liveQ));
+  const Q = SMOKE_Q[q];
+  U.uTime.value = st.t; U.uSteps.value = Q[0]; U.uOct.value = Math.min(o.smokeOct ?? 4, Q[1] + 1); U.uShS.value = Q[2]; U.uLMax.value = Q[3];
+  U.uDens.value = Math.max(0, g("density"));
+  _shapeCol.set(g("color")); U.uCol1.value.copy(_shapeCol);
+  _shapeCol.set(g("color2")); U.uCol2.value.copy(_shapeCol);
+  U.uFreq.value = o.smokeFreq ?? 2.2; U.uRise.value = g("rise"); U.uTurb.value = g("turb"); U.uCut.value = o.smokeCut ?? 0.3; U.uEdge.value = o.smokeEdge ?? 0.25;
+  U.uSigma.value = o.smokeSigma ?? 10; U.uShape.value = o.smokeShape === "plume" ? 1 : 0; U.uSeed.value = o.smokeSeed ?? 1;
+  U.uWind.value.set(o.smokeWindX || 0, o.smokeWindZ || 0);
+  U.uAmb.value = o.smokeAmb ?? 0.5; U.uSun.value = o.smokeSun ?? 0.8; U.uLMix.value = o.smokeLMix ?? 1; U.uG.value = Math.max(-0.5, Math.min(0.9, o.smokeG ?? 0.35)); U.uShadowK.value = o.smokeShadow ?? 1.5;
+  const az = ((o.smokeSunAz ?? 35) * Math.PI) / 180, el = ((o.smokeSunEl ?? 55) * Math.PI) / 180;
+  U.uSunDir.value.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+  mesh.scale.set(Math.max(0.05, g("w")), Math.max(0.05, g("h")), Math.max(0.05, g("d")));
+  mesh.updateWorldMatrix(true, false);
+  U.uMM.value.copy(mesh.matrixWorld); U.uMMI.value.copy(mesh.matrixWorld).invert();
+  _smkV.copy(camera.position); mesh.worldToLocal(_smkV);
+  const inside = Math.abs(_smkV.x) < 0.5 && Math.abs(_smkV.y) < 0.5 && Math.abs(_smkV.z) < 0.5;
+  mat.side = inside ? THREE.BackSide : THREE.FrontSide;
+  mat.depthTest = !inside;
+  let n = 0;
+  WEEB_LIGHTS.forEach((L) => {
+    if (n >= 8 || L.i <= 0.0001) return;
+    U.uLP.value[n].copy(L.p); U.uLD.value[n].copy(L.d);
+    U.uLC.value[n].set(L.c.r * L.i, L.c.g * L.i, L.c.b * L.i);
+    U.uLS.value[n].set(L.cosO, L.cosI, L.dist, L.point ? 1 : 0);
+    n++;
+  });
+  U.uLN.value = n;
+  return U.uDens.value;
+}
+function SceneObjectSmoke({ data }) {
+  const { groupRef, live } = useObjectTransformRef(data.keyframes, false);
+  const { camera } = useThree();
+  const perf = React.useContext(PerfCtx);
+  const mat = useMemo(() => makeSmokeMaterial(), []);
+  const meshRef = useRef(null);
+  const st = useRef({ t: 0 });
+  useFrame((state, delta) => {
+    const kf = live.current;
+    if (!kf || !meshRef.current) return;
+    const dens = driveSmoke(mat, meshRef.current, data, kf.sm, camera, delta, st.current, perf.tier >= 2 ? 1 : 0);
+    if (groupRef.current) groupRef.current.visible = dens > 0.002;
+  });
+  return (
+    <group ref={groupRef}>
+      <mesh ref={meshRef} renderOrder={20} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <primitive object={mat} attach="material" />
+      </mesh>
+    </group>
+  );
+}
 function SceneObjectShape({ data }) {
   const { groupRef, fade, live } = useObjectTransformRef(data.keyframes, data.billboard);
   const mat = useMemo(() => makeShapeMaterial(fade), [fade]);
@@ -3665,6 +3922,7 @@ function SceneObjectLight({ data }) {
 }
 function SceneObject({ data }) {
   if (data.type === "light") return <SceneObjectLight data={data} />;
+  if (data.type === "smoke") return <SceneObjectSmoke data={data} />;
   if (data.type === "shape") return <SceneObjectShape data={data} />;
   if (data.type === "text") return <SceneObjectText data={data} />;
   if (data.type === "video") return <SceneObjectVideo data={data} />;
@@ -3699,7 +3957,7 @@ function SceneObjects() {
   );
 }
 OBJECTS.forEach((obj) => {
-  if (obj.type === "text" || obj.type === "video" || obj.type === "light") return; // texto y video no se precargan (el video se baja solo al montarse)
+  if (obj.type === "text" || obj.type === "video" || obj.type === "light" || obj.type === "smoke") return; // texto y video no se precargan (el video se baja solo al montarse)
   if (obj.type === "image") useTexture.preload(obj.url);
   else useGLTF.preload(obj.url);
 });
@@ -5564,6 +5822,7 @@ function sampleObjectTransform(transformsByStage, progress, stages, easings) {
     lt: lerpVec3(ta.lt || [0, 0, 0], tb.lt || [0, 0, 0], t),
     li: lerp(ta.li ?? 1, tb.li ?? 1, t),
     bl: lerp(ta.bl || 0, tb.bl || 0, t),
+    sm: ta.sm || tb.sm ? smokeLerp(ta.sm, tb.sm, t) : null,
   }, fadeStateFor(ta, tb, t));
 }
 
@@ -5798,6 +6057,14 @@ const _ANIM_ID = { dx: 0, dy: 0, s: 1, sx: 1, sy: 1, blur: 0 };
 //@@use _shapeCol
 //@@use defaultShapeParams
 //@@use shapeLerp
+//@@use SMOKE_VERT
+//@@use SMOKE_FRAG
+//@@use defaultSmokeParams
+//@@use smokeLerp
+//@@use makeSmokeMaterial
+//@@use _smkV
+//@@use SMOKE_Q
+//@@use driveSmoke
 //@@use shapeUniforms
 //@@use makeShapeMaterial
 //@@use patchShapePhys
@@ -6205,6 +6472,26 @@ function ObjectPreviewShape({ obj, fade }) {
 function ObjectPreviewImage({ obj, fade }) {
   return isSvgUrl(obj.url) ? <ObjectPreviewImageSvg obj={obj} fade={fade} /> : <ObjectPreviewImageRaster obj={obj} fade={fade} />;
 }
+function ObjectPreviewSmoke({ obj }) {
+  const { camera } = useThree();
+  const mat = useMemo(() => makeSmokeMaterial(), []);
+  const meshRef = useRef(null);
+  const grpRef = useRef(null);
+  const st = useRef({ t: 0 });
+  useFrame((state, delta) => {
+    if (!meshRef.current) return;
+    const dens = driveSmoke(mat, meshRef.current, obj, obj.sm, camera, delta, st.current, 1);
+    if (grpRef.current) grpRef.current.visible = dens > 0.002;
+  });
+  return (
+    <group ref={grpRef} position={obj.position} rotation={[0, (obj.rotationY * Math.PI) / 180, 0]} scale={obj.scale}>
+      <mesh ref={meshRef} renderOrder={20} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <primitive object={mat} attach="material" />
+      </mesh>
+    </group>
+  );
+}
 function ObjectPreviewLight({ obj }) {
   const { scene } = useThree();
   const ref = useRef(null);
@@ -6239,8 +6526,9 @@ function ObjectPreviewLight({ obj }) {
 }
 function ObjectPreview({ obj }) {
   const fade = useMemo(() => makeFadeUniforms(), []);
-  if (obj.type !== "text" && obj.type !== "shape" && obj.type !== "light" && !(obj.previewUrl || obj.url)) return null;
+  if (obj.type !== "text" && obj.type !== "shape" && obj.type !== "light" && obj.type !== "smoke" && !(obj.previewUrl || obj.url)) return null;
   if (obj.type === "light") return <ObjectPreviewLight obj={obj} />;
+  if (obj.type === "smoke") return <ObjectPreviewSmoke obj={obj} />;
   let inner;
   if (obj.type === "text") inner = <ObjectPreviewText obj={obj} fade={fade} />;
   else if (obj.type === "shape") inner = <ObjectPreviewShape obj={obj} fade={fade} />;
@@ -7150,7 +7438,7 @@ function generateLoaderCss(loader) {
 }
 
 function generateObjectsCode(objects, transformsByKf, stages, easings) {
-  objects = objects.filter((o) => o.type === "text" || o.type === "shape" || o.type === "light" || (o.url && o.url.trim()));
+  objects = objects.filter((o) => o.type === "text" || o.type === "shape" || o.type === "light" || o.type === "smoke" || (o.url && o.url.trim()));
   const fmtNum = (n) => (Math.abs(n) < 0.0001 ? 0 : Math.round(n * 1000) / 1000);
   const fmtVec = (v) => `[${v.map(fmtNum).join(", ")}]`;
   const esc = (s) => JSON.stringify(s == null ? "" : s);
@@ -7159,7 +7447,7 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     const kfLines = stages.map((kf, idx) => {
       const t = transforms[kf.id] || { position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" };
       const easing = idx === 0 ? "smooth" : (easings[idx - 1] || "smooth");
-      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${t.bl ? `, bl: ${fmtNum(t.bl)}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
+      return `      { progress: ${roundProgress(kf.progress)}, easing: "${easing}", position: ${fmtVec(t.position)}, scale: ${fmtNum(t.scale)}, rotationY: ${fmtNum(t.rotationY)}, hidden: ${t.hidden ? "true" : "false"}, fadeDir: "${t.fadeDir || "ltr"}"${t.sx != null && t.sx !== 1 ? `, sx: ${fmtNum(t.sx)}` : ""}${t.sy != null && t.sy !== 1 ? `, sy: ${fmtNum(t.sy)}` : ""}${t.rv != null && t.rv !== 1 ? `, rv: ${fmtNum(t.rv)}` : ""}${t.rz ? `, rz: ${fmtNum(t.rz)}` : ""}${t.tk ? `, tk: ${fmtNum(t.tk)}` : ""}${t.lh ? `, lh: ${fmtNum(t.lh)}` : ""}${t.bl ? `, bl: ${fmtNum(t.bl)}` : ""}${o.type === "smoke" ? `, sm: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultSmokeParams(), ...(t.sm || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 1000) / 1000 : v])))}` : ""}${o.type === "light" ? `, lt: ${fmtVec(t.lt || [0, 0, 0])}, li: ${fmtNum(t.li ?? 1)}` : ""}${o.type === "shape" ? `, sh: ${JSON.stringify(Object.fromEntries(Object.entries({ ...defaultShapeParams(), ...(t.sh || {}) }).map(([k, v]) => [k, typeof v === "number" ? Math.round(v * 10000) / 10000 : v])))}` : ""} },`;
     }).join("\n");
     if (o.type === "text") {
       return `  {
@@ -7179,6 +7467,21 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     lit: ${o.lit ? "true" : "false"},
     litBase: ${fmtNum(o.litBase ?? 0.2)},
     billboard: ${o.billboard ? "true" : "false"},
+    keyframes: [
+${kfLines}
+    ],
+  },`;
+    }
+    if (o.type === "smoke") {
+      const F = (k, dflt) => fmtNum(o[k] ?? dflt);
+      return `  {
+    type: "smoke",
+    smokeShape: "${o.smokeShape === "plume" ? "plume" : "volume"}",
+    smokeSeed: ${F("smokeSeed", 1)}, smokeFreq: ${F("smokeFreq", 2.2)}, smokeOct: ${F("smokeOct", 4)}, smokeCut: ${F("smokeCut", 0.3)}, smokeEdge: ${F("smokeEdge", 0.25)}, smokeSigma: ${F("smokeSigma", 10)},
+    smokeWindX: ${F("smokeWindX", 0)}, smokeWindZ: ${F("smokeWindZ", 0)}, smokeSpeed: ${F("smokeSpeed", 1)},
+    smokeAmb: ${F("smokeAmb", 0.5)}, smokeSun: ${F("smokeSun", 0.8)}, smokeSunAz: ${F("smokeSunAz", 35)}, smokeSunEl: ${F("smokeSunEl", 55)},
+    smokeLMix: ${F("smokeLMix", 1)}, smokeG: ${F("smokeG", 0.35)}, smokeShadow: ${F("smokeShadow", 1.5)}, smokeQuality: ${F("smokeQuality", 2)},
+    billboard: false,
     keyframes: [
 ${kfLines}
     ],
@@ -7573,6 +7876,7 @@ const ICONS = {
   video: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 9.5v5l4.5-2.5z" /></>,
   capture: <><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></>,
   reset: <path d="M4 12a8 8 0 108-8M4 4v5h5" />,
+  smoke: <path d="M7 18a4 4 0 010-8 5 5 0 019.5-1A3.5 3.5 0 0117 18zM9 21h6" />,
   light: <><circle cx="12" cy="9" r="4" /><path d="M12 2v1.5M4.5 5l1 1M19.5 5l-1 1M3 9h1.5M19.5 9H21M9.5 15h5M10 18h4" /></>,
   shape: <><rect x="3.5" y="6" width="17" height="12" rx="4.5" /><path d="M7 12h.01M12 12h.01M17 12h.01" /></>,
 };
@@ -8409,6 +8713,7 @@ function App() {
   // Cámara o el Movimiento del personaje — así también pueden moverse
   // a lo largo del scroll y no quedan estáticos.
   const [objects, setObjects] = useState([]);
+  const SMOKE_DEFAULTS = { smokeShape: "volume", smokeSeed: 1, smokeFreq: 2.2, smokeOct: 4, smokeCut: 0.3, smokeEdge: 0.25, smokeSigma: 10, smokeWindX: 0, smokeWindZ: 0, smokeSpeed: 1, smokeAmb: 0.5, smokeSun: 0.8, smokeSunAz: 35, smokeSunEl: 55, smokeLMix: 1, smokeG: 0.35, smokeShadow: 1.5, smokeQuality: 2 };
   const LIGHT_DEFAULTS = { lightKind: "spot", lightColor: "#fff4e0", lightIntensity: 80, lightAngle: 35, lightPenumbra: 0.5, lightDistance: 0, lightDecay: 2, lightShadow: false };
   const defaultObjectTransform = () => ({ position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" });
   // Al copiar/fijar transformaciones entre poses se conserva la visibilidad
@@ -8428,13 +8733,14 @@ function App() {
     const newId = `obj-${Date.now()}`;
     const used = objects.map((o, k) => o.color || PALETTE[k % PALETTE.length]);
     const color = PALETTE.find((c) => !used.includes(c)) || PALETTE[objects.length % PALETTE.length];
-    const base = { id: newId, label: `${{ model: "Modelo", image: "Imagen", video: "Video", text: "Texto", shape: "Forma", light: "Luz" }[type]} ${objects.length + 1}`, type, url: "", previewUrl: null, billboard: type !== "model" && type !== "light", visible: true, color };
+    const base = { id: newId, label: `${{ model: "Modelo", image: "Imagen", video: "Video", text: "Texto", shape: "Forma", light: "Luz", smoke: "Humo" }[type]} ${objects.length + 1}`, type, url: "", previewUrl: null, billboard: type !== "model" && type !== "light" && type !== "smoke", visible: true, color };
     if (type === "light") Object.assign(base, LIGHT_DEFAULTS);
+    if (type === "smoke") Object.assign(base, SMOKE_DEFAULTS);
     if (type === "video") Object.assign(base, { loop: true, videoMode: "scroll", scrubFrom: 0, scrubTo: 100 });
     if (type === "shape") Object.assign(base, { shapeKind: "rect", shapeCap: "round", shapeCols: 8, shapeRows: 4 });
     if (type === "text") Object.assign(base, { text: "Texto", textEffect: "none", textColor: "#ffffff", fontFamily: "'Inter', sans-serif", fontWeight: 600, textAlign: "center", textOutline: false, textOutlineColor: "#000000", textGradient: { on: false, colors: ["#6ee7f9", "#a78bfa"], angle: 0 }, letterSpacing: 0, lineHeight: 1.2, wordStyles: {} });
     setObjects((prev) => [...prev, base]);
-    setObjectTransformsByKf((prev) => ({ ...prev, [newId]: Object.fromEntries(stagesComputed.map((st) => [st.id, type === "light" ? { ...defaultObjectTransform(), position: [0, 2.5, 4], lt: [0, 1, 0], li: 1 } : defaultObjectTransform()])) }));
+    setObjectTransformsByKf((prev) => ({ ...prev, [newId]: Object.fromEntries(stagesComputed.map((st) => [st.id, type === "light" ? { ...defaultObjectTransform(), position: [0, 2.5, 4], lt: [0, 1, 0], li: 1 } : type === "smoke" ? { ...defaultObjectTransform(), position: [0, 1.5, 0], sm: defaultSmokeParams() } : defaultObjectTransform()])) }));
     setSelectedObj(newId);
   };
   const duplicateObject = (id) => {
@@ -8503,6 +8809,22 @@ function App() {
       const cur = { ...forObj[activeStage] };
       cur.sh = { ...defaultShapeParams(), ...(cur.sh || {}), [key]: value };
       forObj[activeStage] = cur;
+      return { ...prev, [id]: forObj };
+    });
+  };
+  const setObjectSmoke = (id, key, value) => {
+    setObjectTransformsByKf((prev) => {
+      const forObj = { ...prev[id] };
+      const cur = { ...forObj[activeStage] };
+      cur.sm = { ...defaultSmokeParams(), ...(cur.sm || {}), [key]: value };
+      forObj[activeStage] = cur;
+      return { ...prev, [id]: forObj };
+    });
+  };
+  const setObjectSmokeAllStages = (id, key, value) => {
+    setObjectTransformsByKf((prev) => {
+      const forObj = { ...prev[id] };
+      Object.keys(forObj).forEach((k) => { forObj[k] = { ...forObj[k], sm: { ...defaultSmokeParams(), ...(forObj[k].sm || {}), [key]: value } }; });
       return { ...prev, [id]: forObj };
     });
   };
@@ -8584,6 +8906,9 @@ function App() {
           lineHeight: o.lineHeight ?? 1.2,
           wordStyles: o.wordStyles ?? {},
         };
+      }
+      if (type === "smoke") {
+        return { ...SMOKE_DEFAULTS, ...o, type: "smoke", url: "", previewUrl: null, billboard: false };
       }
       if (type === "light") {
         return { ...LIGHT_DEFAULTS, ...o, type: "light", url: "", previewUrl: null, billboard: false };
@@ -9157,7 +9482,7 @@ function App() {
 
   const renderObjectEditor = (o, idx) => {
     const c = colorOf(o, idx);
-    const isImage = o.type === "image", isVideo = o.type === "video", isText = o.type === "text", isShape = o.type === "shape", isLight = o.type === "light", isModel = !isImage && !isVideo && !isText && !isShape && !isLight;
+    const isImage = o.type === "image", isVideo = o.type === "video", isText = o.type === "text", isShape = o.type === "shape", isLight = o.type === "light", isSmoke = o.type === "smoke", isModel = !isImage && !isVideo && !isText && !isShape && !isLight && !isSmoke;
     const t = (objectTransformsByKf[o.id] && objectTransformsByKf[o.id][activeStage]) || defaultObjectTransform();
     const mismatch = (isModel && /\.(svg|png|jpe?g|webp|mp4|webm)$/i.test(o.url)) || (isImage && /\.(glb|mp4|webm)$/i.test(o.url)) || (isVideo && /\.(glb|svg|png|jpe?g|webp)$/i.test(o.url));
     const head = (
@@ -9169,9 +9494,54 @@ function App() {
             {PALETTE.map((p) => <option key={p} value={p} style={{ color: p }}>●</option>)}
           </select>
         </div>
-        <Seg value={o.type || "model"} onChange={(v) => setObjectType(o.id, v)} options={[["model", "Modelo"], ["image", "Imagen / SVG"], ["video", "Video"], ["text", "Texto"], ["shape", "Forma"], ["light", "Luz"]]} />
+        <Seg value={o.type || "model"} onChange={(v) => setObjectType(o.id, v)} options={[["model", "Modelo"], ["image", "Imagen / SVG"], ["video", "Video"], ["text", "Texto"], ["shape", "Forma"], ["light", "Luz"], ["smoke", "Humo"]]} />
       </>
     );
+    if (isSmoke) {
+      const d0 = defaultSmokeParams(), sp = (k) => (t.sm && t.sm[k] != null ? t.sm[k] : d0[k]), set = (k) => (v) => setObjectSmoke(o.id, k, v), U = (k, v) => updateObject(o.id, { [k]: v });
+      const g = (k, dflt) => (o[k] ?? dflt);
+      return (
+        <div className="oed" style={{ "--oc": c }}>
+          {head}
+          <Seg value={o.smokeShape === "plume" ? "plume" : "volume"} onChange={(v) => U("smokeShape", v)} options={[["volume", "Niebla (llena la caja)"], ["plume", "Columna (sale de la base)"]]} />
+          <div className="grp-t" style={{ marginTop: 6 }}>Humo · {currentStageLabel} (se anima entre poses)</div>
+          <Slider label="Densidad (0 = sin humo)" min={0} max={3} step={0.01} value={sp("density")} onChange={set("density")} />
+          <Slider label="Ancho" min={0.5} max={40} step={0.1} value={sp("w")} onChange={set("w")} />
+          <Slider label="Alto" min={0.5} max={40} step={0.1} value={sp("h")} onChange={set("h")} />
+          <Slider label="Fondo" min={0.5} max={40} step={0.1} value={sp("d")} onChange={set("d")} />
+          <ColorRow label="Color base" value={sp("color")} onChange={set("color")} />
+          <ColorRow label="Color arriba" value={sp("color2")} onChange={set("color2")} />
+          <Slider label="Turbulencia (remolinos)" min={0} max={3} step={0.01} value={sp("turb")} onChange={set("turb")} />
+          <Slider label="Velocidad de ascenso" min={-1} max={2} step={0.01} value={sp("rise")} onChange={set("rise")} />
+          <Vec3 label="Posición (centro)" value={t.position} onChange={(a2, v) => setObjectTransform(o.id, "position", a2, v)} />
+          <Slider label="Giro Y" min={-180} max={180} step={0.1} value={t.rotationY} onChange={(v) => setObjectTransform(o.id, "rotationY", null, v)} />
+          <div className="tools">
+            <Btn onClick={() => set("density")(0)}>Quitar humo aquí</Btn>
+            <Btn onClick={() => setObjectSmokeAllStages(o.id, "density", 0)}>Quitar en todas</Btn>
+          </div>
+          <div className="grp-t" style={{ marginTop: 6 }}>Forma del humo</div>
+          <Slider label="Tamaño de las nubes" min={0.5} max={8} step={0.05} value={g("smokeFreq", 2.2)} onChange={(v) => U("smokeFreq", v)} />
+          <Slider label="Huecos (más = más ralo)" min={0} max={0.8} step={0.01} value={g("smokeCut", 0.3)} onChange={(v) => U("smokeCut", v)} />
+          <Slider label="Opacidad / espesor" min={1} max={20} step={0.1} value={g("smokeSigma", 10)} onChange={(v) => U("smokeSigma", v)} />
+          <Slider label="Detalle (capas de ruido)" min={2} max={6} step={1} value={g("smokeOct", 4)} onChange={(v) => U("smokeOct", v)} />
+          <Slider label="Bordes suaves" min={0.05} max={0.5} step={0.01} value={g("smokeEdge", 0.25)} onChange={(v) => U("smokeEdge", v)} />
+          <Slider label="Viento X" min={-2} max={2} step={0.01} value={g("smokeWindX", 0)} onChange={(v) => U("smokeWindX", v)} />
+          <Slider label="Viento Z" min={-2} max={2} step={0.01} value={g("smokeWindZ", 0)} onChange={(v) => U("smokeWindZ", v)} />
+          <Slider label="Velocidad del tiempo" min={0} max={4} step={0.05} value={g("smokeSpeed", 1)} onChange={(v) => U("smokeSpeed", v)} />
+          <Slider label="Semilla (cambia la forma)" min={0} max={50} step={1} value={g("smokeSeed", 1)} onChange={(v) => U("smokeSeed", v)} />
+          <div className="grp-t" style={{ marginTop: 6 }}>Luz</div>
+          <Slider label="Luz ambiente" min={0} max={2} step={0.01} value={g("smokeAmb", 0.5)} onChange={(v) => U("smokeAmb", v)} />
+          <Slider label="Luz de relleno" min={0} max={3} step={0.01} value={g("smokeSun", 0.8)} onChange={(v) => U("smokeSun", v)} />
+          <Slider label="Relleno · azimut" min={0} max={360} step={1} value={g("smokeSunAz", 35)} onChange={(v) => U("smokeSunAz", v)} />
+          <Slider label="Relleno · altura" min={-90} max={90} step={1} value={g("smokeSunEl", 55)} onChange={(v) => U("smokeSunEl", v)} />
+          <Slider label="Tus luces (spots)" min={0} max={3} step={0.01} value={g("smokeLMix", 1)} onChange={(v) => U("smokeLMix", v)} />
+          <Slider label="Haces visibles (dispersión)" min={-0.5} max={0.9} step={0.01} value={g("smokeG", 0.35)} onChange={(v) => U("smokeG", v)} />
+          <Slider label="Sombra interna" min={0} max={4} step={0.05} value={g("smokeShadow", 1.5)} onChange={(v) => U("smokeShadow", v)} />
+          <Seg value={String(g("smokeQuality", 2))} onChange={(v) => U("smokeQuality", Number(v))} options={[["1", "MP4 normal"], ["2", "MP4 alta"], ["3", "MP4 máxima"]]} />
+          <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Humo volumétrico real, pensado para el MP4: al exportar usa la calidad elegida (más muestras por cuadro, sombras internas) y el tiempo del video, así cada exportación sale idéntica y se puede avanzar y retroceder. En el visor se ve en calidad liviana. La caja define dónde hay humo: en «Columna» el humo nace en la base de la caja y sube. Si la caja atraviesa un objeto, el humo no se oculta detrás de él (se ve por encima): dejá los objetos fuera de la caja o usá cajas más chicas. Prende y apagá luces por pose para ver los haces dentro del humo.</div>
+        </div>
+      );
+    }
     if (isLight) {
       const spot = o.lightKind !== "point";
       const total = objects.filter((x) => x.type === "light").length;
@@ -9886,6 +10256,7 @@ function App() {
                   <Btn icon="text" onClick={() => addObject("text")}>Texto</Btn>
                   <Btn icon="shape" onClick={() => addObject("shape")}>Forma</Btn>
                   <Btn icon="light" onClick={() => addObject("light")}>Luz</Btn>
+                  <Btn icon="smoke" onClick={() => addObject("smoke")}>Humo</Btn>
                   <span className="grow" />
                   <IBtn icon="copy" title="Todos desde la pose anterior" disabled={stageIndex <= 0 || !objects.length} onClick={copyAllObjectTransformsFromPrev} />
                   <IBtn icon="pin" title="Fijar todos en todas las poses" disabled={!objects.length} onClick={applyAllObjectTransformsToAllStages} />
@@ -9894,7 +10265,7 @@ function App() {
                 <div className="outliner">
                   {objects.map((o, i) => (objOnlyVisible && !isVisibleHere(o) && !(selObj && selObj.id === o.id)) ? null : (
                     <div key={o.id} className={`orow ${selObj && selObj.id === o.id ? "sel" : ""} ${o.visible && !(objectTransformsByKf[o.id] && objectTransformsByKf[o.id][activeStage] && objectTransformsByKf[o.id][activeStage].hidden) ? "" : "off"}`} style={{ "--oc": colorOf(o, i) }} onClick={() => setSelectedObj(o.id)}>
-                      <span className="oico"><Icon name={o.type === "text" ? "text" : o.type === "shape" ? "shape" : o.type === "light" ? "light" : o.type === "image" ? "image" : o.type === "video" ? "video" : "cube"} size={15} /></span>
+                      <span className="oico"><Icon name={o.type === "text" ? "text" : o.type === "shape" ? "shape" : o.type === "light" ? "light" : o.type === "smoke" ? "smoke" : o.type === "image" ? "image" : o.type === "video" ? "video" : "cube"} size={15} /></span>
                       <span className="oname">{o.label}</span>
                       <button className="mini" title="Visible" onClick={(e) => { e.stopPropagation(); updateObject(o.id, { visible: !o.visible }); }}><Icon name={o.visible ? "eye" : "eyeoff"} size={14} /></button>
                       <button className="mini" title="Duplicar (usa el mismo archivo)" onClick={(e) => { e.stopPropagation(); duplicateObject(o.id); }}><Icon name="copy" size={14} /></button>
