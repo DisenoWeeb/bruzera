@@ -2277,6 +2277,10 @@ function buildTextGlyphGeometry(info) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  /* normales (+Z): sin ellas el material con "Recibe luz" calcula la luz con una normal vacía y el texto queda negro */
+  const nrm = new Float32Array((pos.length / 3) * 3);
+  for (let q = 2; q < nrm.length; q += 3) nrm[q] = 1;
+  geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
   geo.setAttribute("aG1", new THREE.Float32BufferAttribute(g1, 4));
   geo.setAttribute("aG2", new THREE.Float32BufferAttribute(g2, 4));
   geo.setAttribute("aCx", new THREE.Float32BufferAttribute(cx, 1));
