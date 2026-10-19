@@ -582,6 +582,8 @@
     "react-dom": "https://esm.sh/react-dom@18.3.1",
     "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
     "three": "https://esm.sh/three@0.160.0",
+    "three/examples/jsm/loaders/SVGLoader.js": "https://esm.sh/three@0.160.0/examples/jsm/loaders/SVGLoader.js?external=three",
+    "three/examples/jsm/utils/BufferGeometryUtils.js": "https://esm.sh/three@0.160.0/examples/jsm/utils/BufferGeometryUtils.js?external=three",
     "zustand": "https://esm.sh/zustand@4.5.5?external=react",
     "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.17.10?external=react,react-dom,three",
     "@react-three/drei": "https://esm.sh/@react-three/drei@9.114.3?external=react,react-dom,three,@react-three/fiber",
@@ -599,6 +601,8 @@ import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { create } from "zustand";
 import * as THREE from "three";
+import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
+import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF, Stars, useTexture, Billboard, useProgress, MeshReflectorMaterial, ContactShadows, PerformanceMonitor } from "@react-three/drei";
 import { EffectComposer, Bloom, ToneMapping, N8AO, SMAA, DepthOfField } from "@react-three/postprocessing";
@@ -906,6 +910,7 @@ const SCROLL_LENGTH_VH = 950;
 /*@GEN:SCROLL_LENGTH_END*/
 
 /*@GEN:POSTFX_START*/
+const ACCENT = "";
 const HALO = 0;
 const PHONE_COLUMN = false;
 const VIGNETTE_ENABLED = false;
@@ -3195,7 +3200,21 @@ function NaturalFill({ intensity }) {
    Sin entorno reflejan negro salvo cuando una luz les pega justo de frente. Acá se arma un estudio
    procedural (paredes oscuras + softboxes) y se pasa por PMREM; se aplica a los materiales de los
    objetos .glb SIN tocar scene.background (el fondo violeta queda igual). Sin descargas de HDRI. */
-function buildStudioEnvTexture(gl) {
+/* Color de acento global (opcional): reemplaza el rosa/violeta automático del contraluz, el entorno de reflejos y el foco de fondo.
+   Vacío = como siempre (cada pose usa su color de contraluz). Blanco = acento neutro. */
+function accentTone(accent, l, fallback) {
+  if (!accent) return fallback;
+  const c = new THREE.Color(accent), h = {};
+  c.getHSL(h);
+  return new THREE.Color().setHSL(h.h, h.s, l);
+}
+function accentHalo(accent, halo) {
+  if (!accent) return [`rgba(255,232,255,${0.34 * halo})`, `rgba(196,140,255,${0.12 * halo})`];
+  const n = parseInt(String(accent).slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const mix = (v) => Math.round(v + (255 - v) * 0.78);
+  return [`rgba(${mix(r)},${mix(g)},${mix(b)},${0.34 * halo})`, `rgba(${r},${g},${b},${0.14 * halo})`];
+}
+function buildStudioEnvTexture(gl, accent) {
   const env = new THREE.Scene();
   const wall = (hex, k) => new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(k), side: THREE.BackSide, toneMapped: false });
   // +x, -x, +y, -y, +z, -z
@@ -3209,7 +3228,7 @@ function buildStudioEnvTexture(gl) {
   panel(9, 9, "#fff1dc", 7, 0, 19, 0);          // arriba (cálido)
   panel(2.6, 20, "#ffffff", 10, -17, 3, 9);     // tira alta adelante-izquierda: dibuja el brillo largo en bordes y placas
   panel(2.6, 20, "#ffe6c8", 7, 17, 3, 9);       // tira alta adelante-derecha (cálida)
-  panel(3.5, 18, "#ff5fd2", 8, 18, 2, -8);      // acento fucsia atrás-derecha (rim)
+  panel(3.5, 18, accent ? accentTone(accent, 0.62, null) : "#ff5fd2", 8, 18, 2, -8);      // acento fucsia atrás-derecha (rim)
   panel(3.5, 18, "#8db8ff", 4, -18, 2, -8);     // relleno frío atrás-izquierda
   panel(22, 10, "#ffeedd", 4.5, 0, 3, 19);      // relleno suave detrás de cámara (es lo que ve una placa dorada de frente)
   const pm = new THREE.PMREMGenerator(gl);
@@ -3219,18 +3238,20 @@ function buildStudioEnvTexture(gl) {
   return rt.texture;
 }
 const __studioEnvCache = new WeakMap();
-function getStudioEnv(gl) {
-  let t = __studioEnvCache.get(gl);
-  if (!t) { t = buildStudioEnvTexture(gl); __studioEnvCache.set(gl, t); }
-  return t;
+function getStudioEnv(gl, accent) {
+  let m = __studioEnvCache.get(gl); if (!m) { m = {}; __studioEnvCache.set(gl, m); }
+  const k = accent || "";
+  if (!m[k]) m[k] = buildStudioEnvTexture(gl, accent);
+  return m[k];
 }
 function useStudioEnv() {
   const gl = useThree((s) => s.gl);
   const rig = React.useContext(EnvSettingsCtx).rig;
+  const accent = React.useContext(EnvSettingsCtx).accent || "";
   return useMemo(() => {
-    try { return rig === "studio" ? getStudioEnvV2(gl) : getStudioEnv(gl); }
+    try { return rig === "studio" ? getStudioEnvV2(gl, accent) : getStudioEnv(gl, accent); }
     catch (e) { console.warn("No se pudo crear el entorno de reflejos:", e && e.message); return null; }
-  }, [gl, rig]);
+  }, [gl, rig, accent]);
 }
 /* Aplica (o saca) el entorno a los materiales PBR de un modelo. Si el material del .glb ya trae su propio envMap, lo respeta. */
 function applyStudioEnv(root, tex, enabled, intensity) {
@@ -3250,11 +3271,11 @@ function applyStudioEnv(root, tex, enabled, intensity) {
    Entorno v2: cuarto casi negro + softboxes altas y finas. Lo que da el look de producto
    no es "más luz" sino brillos largos y nítidos en cantos y metales sobre un fondo oscuro.
    Se usa cuando postFx.lightRig === "studio" (el rig clásico queda igual que antes). */
-function buildStudioEnvTextureV2(gl) {
+function buildStudioEnvTextureV2(gl, accent) {
   const env = new THREE.Scene();
   const wall = (hex, k) => new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(k), side: THREE.BackSide, toneMapped: false });
   // +x, -x, +y, -y, +z, -z
-  env.add(new THREE.Mesh(new THREE.BoxGeometry(40, 40, 40), [wall("#2a1440", 1), wall("#2a1440", 1), wall("#2a1440", 1), wall("#4a1778", 1), wall("#2a1440", 1), wall("#2a1440", 1)]));
+  env.add(new THREE.Mesh(new THREE.BoxGeometry(40, 40, 40), (() => { const w = accentTone(accent, 0.17, "#2a1440"), f = accentTone(accent, 0.29, "#4a1778"); return [wall(w, 1), wall(w, 1), wall(w, 1), wall(f, 1), wall(w, 1), wall(w, 1)]; })()));
   const panel = (w, h, hex, k, x, y, z) => {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(k), side: THREE.DoubleSide, toneMapped: false }));
     m.position.set(x, y, z); m.lookAt(0, 0, 0); env.add(m);
@@ -3262,12 +3283,12 @@ function buildStudioEnvTextureV2(gl) {
   // Look "producto premium": cuarto violeta medio (así el metal nunca se ve negro), UNA softbox grande arriba-izquierda,
   // filos largos de contraluz (el brillo fino en cantos y dorado) y un panel cálido a la derecha para que el oro lea como oro.
   panel(28, 24, "#fff4ee", 2.6, -13, 11, 13);   // key: softbox grande arriba-izquierda-adelante
-  panel(4, 34, "#ffe6f7", 7, 16, 6, -5);        // filo derecho (contraluz)
+  panel(4, 34, accent ? accentTone(accent, 0.93, null) : "#ffe6f7", 7, 16, 6, -5);        // filo derecho (contraluz)
   panel(4, 34, "#ffffff", 3.5, -17, 6, -8);     // filo izquierdo, más tenue
   panel(24, 16, "#ffdca0", 1.6, 15, 3, 12);     // cálido adelante-derecha (oro)
   panel(20, 20, "#fff0e0", 1.2, 0, 19, 0);      // techo
   panel(30, 14, "#ffe9c8", 1.2, 0, 3, 19);      // frente cálido
-  panel(16, 10, "#b27cf0", 0.9, -14, -2, 10);   // relleno violeta
+  panel(16, 10, accent ? accentTone(accent, 0.7, null) : "#b27cf0", 0.9, -14, -2, 10);   // relleno violeta
   const pm = new THREE.PMREMGenerator(gl);
   const rt = pm.fromScene(env, 0.02);
   pm.dispose();
@@ -3275,17 +3296,18 @@ function buildStudioEnvTextureV2(gl) {
   return rt.texture;
 }
 const __studioEnvV2Cache = new WeakMap();
-function getStudioEnvV2(gl) {
-  let t = __studioEnvV2Cache.get(gl);
-  if (!t) { t = buildStudioEnvTextureV2(gl); __studioEnvV2Cache.set(gl, t); }
-  return t;
+function getStudioEnvV2(gl, accent) {
+  let m = __studioEnvV2Cache.get(gl); if (!m) { m = {}; __studioEnvV2Cache.set(gl, m); }
+  const k = accent || "";
+  if (!m[k]) m[k] = buildStudioEnvTextureV2(gl, accent);
+  return m[k];
 }
 /* Luces del rig Estudio: un spot (key) con sombra suave + un rim de color atrás.
    Sigue la dirección/color/intensidad de la luz de cada pose (Escena → Luz). */
 const STUDIO_KEY = 200;   // la intensidad "0.7" de una pose → ~50 cd a 9 u de distancia
 const STUDIO_RIM = 50;
 const rigDamp = (c, t, l, dt) => c + (t - c) * (1 - Math.exp(-l * dt));
-function StudioRigLights({ getLight, getLookAt, getCamPos, exposure, mobile }) {
+function StudioRigLights({ getLight, getLookAt, getCamPos, exposure, mobile, accent }) {
   const spot = useRef(null);
   const rim = useRef(null);
   const amb = useRef(null);
@@ -3323,7 +3345,7 @@ function StudioRigLights({ getLight, getLookAt, getCamPos, exposure, mobile }) {
     if (rim.current) {
       const q = lightDirFromAngles((L.azimuth ?? 45) + 160, 25, d * 0.78);
       rim.current.position.set(la[0] + q[0], la[1] + q[1], la[2] + q[2]);
-      rim.current.color.set(L.rimColor || "#ff9ad8");
+      rim.current.color.set(accent || L.rimColor || "#ff9ad8");
       rim.current.intensity = rigDamp(rim.current.intensity, (L.rimIntensity ?? 1.4) * STUDIO_RIM * e * k, 4, delta);
     }
   });
@@ -3486,7 +3508,7 @@ function applyScreenGlass(root, amount, match, onSwap) {
     if (next.some((m, i) => m !== mats[i])) child.material = isArr ? next : next[0];
   });
 }
-const EnvSettingsCtx = React.createContext({ enabled: ENV_ENABLED, intensity: ENV_INTENSITY * EXPOSURE * (1 + 0.35 * NATURAL_LIGHT), rig: LIGHT_RIG });
+const EnvSettingsCtx = React.createContext({ enabled: ENV_ENABLED, intensity: ENV_INTENSITY * EXPOSURE * (1 + 0.35 * NATURAL_LIGHT), rig: LIGHT_RIG, accent: ACCENT });
 function applyGlow(scene, glow) {
   scene.traverse((child) => {
     if (!child.isMesh) return;
@@ -3560,6 +3582,216 @@ function SceneObjectModel({ data }) {
     </group>
   );
 }
+/* ---- Logo / SVG con volumen (extruido) ----
+   Un .svg subido como "Imagen / SVG" puede pasar de cartel plano a objeto 3D: se extruyen sus trazos
+   (grosor + bisel) y se le da un material (mate, plástico, metal, cromo, oro, vidrio, neón). Grosor 0 = plano, como siempre. */
+const SVG_MATS = {
+  /* base */
+  matte:     { label: "Mate", rough: 0.85, metal: 0 },
+  plastic:   { label: "Plástico brillante", rough: 0.22, metal: 0, clear: 1 },
+  ceramic:   { label: "Cerámica / porcelana", rough: 0.12, metal: 0, clear: 1, color: "#f4f1ec" },
+  rubber:    { label: "Goma negra", rough: 0.95, metal: 0, color: "#1a1a1c" },
+  piano:     { label: "Negro piano", rough: 0.06, metal: 0, clear: 1, color: "#09090a" },
+  /* metales pulidos */
+  metal:     { label: "Metal pulido", rough: 0.25, metal: 1 },
+  chrome:    { label: "Cromo", rough: 0.05, metal: 1, color: "#e6ebf2" },
+  silver:    { label: "Plata", rough: 0.12, metal: 1, color: "#d7d9dd" },
+  gold:      { label: "Oro", rough: 0.2, metal: 1, color: "#f0b840" },
+  rosegold:  { label: "Oro rosa", rough: 0.18, metal: 1, color: "#e8a99a" },
+  copper:    { label: "Cobre pulido", rough: 0.2, metal: 1, color: "#d9825b" },
+  titanium:  { label: "Titanio oscuro", rough: 0.3, metal: 1, color: "#6c6f78" },
+  /* viejo / gastado */
+  goldAged:  { label: "Oro viejo (gastado)", rough: 1, metal: 1, tex: "goldAged" },
+  silverOld: { label: "Plata empañada", rough: 1, metal: 1, tex: "silverOld" },
+  bronze:    { label: "Bronce añejo con pátina", rough: 1, metal: 1, tex: "bronze" },
+  copperOx:  { label: "Cobre oxidado (verdín)", rough: 1, metal: 1, tex: "copperOx" },
+  rust:      { label: "Hierro oxidado", rough: 1, metal: 1, tex: "rust" },
+  steel:     { label: "Acero cepillado", rough: 1, metal: 1, tex: "steel" },
+  paintChip: { label: "Pintura descascarada (usa el color)", rough: 1, metal: 1, tex: "paintChip", useBase: true },
+  plasticOld:{ label: "Plástico viejo / sucio (usa el color)", rough: 1, metal: 0, tex: "plasticOld", useBase: true },
+  /* naturales */
+  stone:     { label: "Piedra", rough: 1, metal: 0, tex: "stone" },
+  concrete:  { label: "Concreto", rough: 1, metal: 0, tex: "concrete" },
+  wood:      { label: "Madera", rough: 1, metal: 0, tex: "wood", clear: 0.25 },
+  magma:     { label: "Magma (roca con grietas encendidas)", rough: 1, metal: 0, tex: "magma", neonTex: true },
+  /* especiales */
+  glass:     { label: "Vidrio", rough: 0.05, metal: 0, glass: true },
+  frosted:   { label: "Vidrio esmerilado", rough: 0.55, metal: 0, glass: true, frost: true },
+  iris:      { label: "Iridiscente / holográfico", rough: 0.1, metal: 0.9, color: "#b9b9d6", iris: 1 },
+  pearl:     { label: "Perla nacarada", rough: 0.25, metal: 0, color: "#f4efe8", clear: 1, iris: 0.6, sheen: 1 },
+  neon:      { label: "Neón (brilla)", rough: 0.5, metal: 0, neon: true },
+};
+/* Texturas procedurales (ruido que se repite sin costuras) para los materiales viejos / gastados. Se generan una vez por material y color. */
+function _mh(ix, iy, sd) { let h = (Math.imul(ix, 374761393) + Math.imul(iy, 668265263) + Math.imul(sd, 982451653)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967295; }
+function _mn(x, y, per, sd) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const m = (q) => ((q % per) + per) % per;
+  const a = _mh(m(xi), m(yi), sd), b = _mh(m(xi + 1), m(yi), sd), c = _mh(m(xi), m(yi + 1), sd), d = _mh(m(xi + 1), m(yi + 1), sd);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function _mf(u, v, per, oct, sd) { let s = 0, a = 0.5, t = 0, f = 1; for (let i = 0; i < oct; i++) { s += a * _mn(u * per * f, v * per * f, per * f, sd + i * 7); t += a; a *= 0.5; f *= 2; } return s / t; }
+const _ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const _mx = (A, B, t) => [A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t];
+const _lin = (c) => Math.pow(c, 2.2);
+const __matTexCache = new Map();
+function getMatTex(kind, baseHex) {
+  const key = kind + "|" + (baseHex || "");
+  if (__matTexCache.has(key)) return __matTexCache.get(key);
+  const N = 256;
+  const bc = baseHex ? (() => { const c = new THREE.Color(baseHex); return [c.r, c.g, c.b].map((q) => Math.pow(q, 1 / 2.2)); })() : [1, 1, 1];
+  const cv = () => { const c = document.createElement("canvas"); c.width = c.height = N; return c; };
+  const C = { map: cv(), rough: cv(), metal: cv(), emis: cv(), bump: cv() };
+  const X = {}; Object.keys(C).forEach((k) => { X[k] = C[k].getContext("2d").createImageData(N, N); });
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const u = i / N, v = j / N, o = (j * N + i) * 4;
+    const n1 = _mf(u, v, 4, 5, 1), n2 = _mf(u, v, 8, 4, 11), n3 = _mf(u, v, 2, 3, 23), fine = _mf(u, v, 32, 2, 31);
+    let col = [1, 1, 1], rough = 0.5, metal = 0, em = [0, 0, 0], bump = n1;
+    if (kind === "goldAged") { const g = _ss(0.5, 0.75, n3 * 0.6 + n2 * 0.5); col = _mx([0.86, 0.66, 0.27], [0.18, 0.12, 0.05], g * 0.85); rough = 0.3 + 0.5 * g + 0.15 * fine; metal = 1 - 0.35 * g; bump = n1 * 0.6 + fine * 0.4; }
+    else if (kind === "silverOld") { const g = _ss(0.45, 0.72, n3 * 0.6 + n2 * 0.5); col = _mx([0.82, 0.82, 0.85], [0.2, 0.18, 0.17], g * 0.9); rough = 0.2 + 0.5 * g + 0.1 * fine; metal = 1 - 0.3 * g; bump = fine; }
+    else if (kind === "bronze") { const p = _ss(0.6, 0.8, n3 * 0.55 + n1 * 0.55); col = _mx([0.46, 0.28, 0.12], [0.22, 0.58, 0.5], p); col = _mx(col, [0.08, 0.05, 0.03], _ss(0.6, 0.85, n2) * 0.5); rough = 0.45 + 0.4 * p + 0.1 * fine; metal = 1 - 0.75 * p; bump = n1 * 0.5 + p * 0.5; }
+    else if (kind === "copperOx") { const p = _ss(0.52, 0.72, n3 * 0.55 + n1 * 0.55); col = _mx([0.74, 0.4, 0.23], [0.36, 0.78, 0.66], p); rough = 0.4 + 0.45 * p + 0.1 * fine; metal = 1 - 0.8 * p; bump = n1 * 0.4 + p * 0.6; }
+    else if (kind === "rust") { const r = _ss(0.38, 0.62, n1 * 0.7 + n3 * 0.4); col = _mx([0.3, 0.29, 0.28], [0.56, 0.25, 0.09], r); col = _mx(col, [0.26, 0.1, 0.04], _ss(0.55, 0.8, n2) * r); rough = 0.55 + 0.4 * r + 0.1 * fine; metal = 1 - 0.6 * r; bump = n1 * 0.6 + n2 * 0.5; }
+    else if (kind === "steel") { const st = (_mn(3.5, v * 96, 96, 3) * 0.6 + _mn(3.5, v * 192, 192, 5) * 0.4) * (0.85 + 0.3 * n1); col = [0.72 * (0.92 + 0.1 * st), 0.73 * (0.92 + 0.1 * st), 0.75 * (0.92 + 0.1 * st)]; rough = 0.3 + 0.18 * st; metal = 1; bump = 0.5 + (st - 0.5) * 0.25; }
+    else if (kind === "paintChip") { const c = _ss(0.6, 0.66, n3 * 0.45 + n2 * 0.4 + fine * 0.3); const sc = _ss(0.8, 0.9, _mn(2.5, v * 90, 90, 9)) * _ss(0.45, 0.6, n2) * 0.6; const cc = Math.max(c, sc); col = _mx([bc[0] * (0.88 + 0.12 * n1), bc[1] * (0.88 + 0.12 * n1), bc[2] * (0.88 + 0.12 * n1)], _mx([0.45, 0.45, 0.47], [0.3, 0.16, 0.08], _ss(0.5, 0.8, n1) * 0.7), cc); rough = cc > 0.5 ? 0.45 : 0.55; metal = cc; bump = 1 - cc * 0.6; }
+    else if (kind === "plasticOld") { const dirt = _ss(0.45, 0.8, n3 * 0.5 + n1 * 0.6); const yel = _ss(0.3, 0.7, n3); col = _mx(_mx(bc, [bc[0] * 0.95 + 0.06, bc[1] * 0.9 + 0.05, bc[2] * 0.6], yel * 0.45), [0.12, 0.1, 0.08], dirt * 0.45); rough = 0.35 + 0.45 * dirt + 0.15 * fine; bump = fine * 0.5 + n2 * 0.3; }
+    else if (kind === "stone") { const sh = 0.55 + 0.7 * n1; col = [0.46 * sh, 0.45 * sh, 0.43 * sh]; col = _mx(col, [0.2, 0.2, 0.2], _ss(0.65, 0.9, n2) * 0.6); rough = 0.9 + 0.1 * fine; bump = n1 * 0.7 + n2 * 0.5 + fine * 0.4; }
+    else if (kind === "concrete") { const sh = 0.7 + 0.45 * n3; col = [0.6 * sh, 0.6 * sh, 0.58 * sh]; col = _mx(col, [0.18, 0.18, 0.18], _ss(0.72, 0.85, fine * 0.5 + n2 * 0.6) * 0.8); rough = 0.95; bump = fine * 0.7 + n2 * 0.5; }
+    else if (kind === "wood") { const t = (v * 9 + 2.2 * _mn(u * 4, v * 4, 4, 41) + 0.6 * _mf(u, v, 8, 3, 43)); const ring = t - Math.floor(t); const g = _ss(0.0, 0.5, ring) * (1 - _ss(0.5, 1.0, ring)) ; col = _mx([0.64, 0.43, 0.23], [0.34, 0.19, 0.08], 1 - Math.abs(ring - 0.5) * 2 * 0.9 > 0.5 ? g : 0.2 + 0.5 * g); col = [col[0] * (0.85 + 0.2 * fine), col[1] * (0.85 + 0.2 * fine), col[2] * (0.85 + 0.2 * fine)]; rough = 0.55 + 0.25 * fine; bump = g * 0.6 + fine * 0.4; }
+    else if (kind === "magma") { const crack = 1 - _ss(0.0, 0.07, Math.abs(_mf(u, v, 4, 4, 51) - 0.5)); const glow = _ss(0.62, 0.85, n2) * 0.5; const hot = Math.min(1, crack + glow); col = _mx([0.07, 0.06, 0.06], [0.2, 0.17, 0.15], n1); em = [1.0 * hot, 0.32 * hot + 0.1 * hot * hot, 0.04 * hot]; rough = 0.9; bump = n1 * 0.7 + (1 - crack) * 0.3; }
+    const put = (k, r, g, b) => { X[k].data[o] = Math.round(Math.min(1, Math.max(0, r)) * 255); X[k].data[o + 1] = Math.round(Math.min(1, Math.max(0, g)) * 255); X[k].data[o + 2] = Math.round(Math.min(1, Math.max(0, b)) * 255); X[k].data[o + 3] = 255; };
+    put("map", col[0], col[1], col[2]); put("rough", rough, rough, rough); put("metal", metal, metal, metal); put("emis", em[0], em[1], em[2]); put("bump", bump, bump, bump);
+  }
+  const out = {};
+  Object.keys(C).forEach((k) => {
+    C[k].getContext("2d").putImageData(X[k], 0, 0);
+    const t = new THREE.CanvasTexture(C[k]);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4;
+    t.colorSpace = k === "map" || k === "emis" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    out[k] = t;
+  });
+  __matTexCache.set(key, out);
+  return out;
+}
+const __svgTextCache = new Map();
+function fetchSvgText(url) {
+  if (!__svgTextCache.has(url)) __svgTextCache.set(url, fetch(url).then((r) => r.text()));
+  return __svgTextCache.get(url);
+}
+/* Los cantos y el bisel se suavizan, pero las caras planas de adelante y atrás conservan su normal plana
+   (si se promedian con el bisel quedan rayas diagonales por los triángulos largos de la tapa). */
+function creaseSides(g) {
+  const gr = g.groups;
+  if (!gr || gr.length < 2) return toCreasedNormals(g, 0.6);
+  const pos = g.attributes.position.array, nor = g.attributes.normal.array;
+  const caps = gr.filter((q) => q.materialIndex === 0), sides = gr.filter((q) => q.materialIndex !== 0);
+  const cat = (list, arr) => { const n = list.reduce((t, q) => t + q.count, 0), out = new Float32Array(n * 3); let o = 0; list.forEach((q) => { out.set(arr.slice(q.start * 3, (q.start + q.count) * 3), o); o += q.count * 3; }); return out; };
+  const capP = cat(caps, pos), capN = cat(caps, nor), sideP = cat(sides, pos);
+  const sg = new THREE.BufferGeometry();
+  sg.setAttribute("position", new THREE.BufferAttribute(sideP, 3));
+  const sc = toCreasedNormals(sg, 0.6);
+  const P = new Float32Array(capP.length + sideP.length), Nn = new Float32Array(capP.length + sideP.length);
+  P.set(capP, 0); Nn.set(capN, 0); P.set(sc.attributes.position.array, capP.length); Nn.set(sc.attributes.normal.array, capP.length);
+  const o = new THREE.BufferGeometry();
+  o.setAttribute("position", new THREE.BufferAttribute(P, 3)); o.setAttribute("normal", new THREE.BufferAttribute(Nn, 3));
+  sg.dispose(); sc.dispose();
+  return o;
+}
+/* UV por proyección según hacia dónde mira cada cara (las del ExtrudeGeometry están en unidades del SVG y no sirven para texturas repetidas). */
+function projectUVs(g, tile) {
+  const P = g.attributes.position.array, n = P.length / 9, uv = new Float32Array(n * 6);
+  for (let t = 0; t < n; t++) {
+    const i = t * 9;
+    const ux = P[i + 3] - P[i], uy = P[i + 4] - P[i + 1], uz = P[i + 5] - P[i + 2], vx = P[i + 6] - P[i], vy = P[i + 7] - P[i + 1], vz = P[i + 8] - P[i + 2];
+    const nx = Math.abs(uy * vz - uz * vy), ny = Math.abs(uz * vx - ux * vz), nz = Math.abs(ux * vy - uy * vx);
+    for (let k = 0; k < 3; k++) {
+      const x = P[i + k * 3], y = P[i + k * 3 + 1], z = P[i + k * 3 + 2];
+      let a, b;
+      if (nz >= nx && nz >= ny) { a = x; b = y; } else if (nx >= ny) { a = z; b = y; } else { a = x; b = z; }
+      uv[t * 6 + k * 2] = a * tile; uv[t * 6 + k * 2 + 1] = b * tile;
+    }
+  }
+  g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+}
+function buildSvgExtrude(text, depthK, bevK, segK) {
+  const data = new SVGLoader().parse(text);
+  const parts = [];
+  const box = new THREE.Box2();
+  data.paths.forEach((pa) => {
+    const st = (pa.userData && pa.userData.style) || {};
+    if (!st.fill || st.fill === "none") return;
+    const shapes = SVGLoader.createShapes(pa);
+    if (!shapes.length) return;
+    shapes.forEach((sh) => sh.getPoints(8).forEach((v) => box.expandByPoint(v)));
+    parts.push({ shapes, color: pa.color ? pa.color.clone() : new THREE.Color("#ffffff") });
+  });
+  /* Suavidad de las curvas: automática según cuántas curvas tiene el logo (un logo con muchas curvas no necesita tantos lados por curva y pesaría de más). */
+  let nCurves = 0;
+  parts.forEach((pt) => pt.shapes.forEach((sh) => { nCurves += sh.curves.length; (sh.holes || []).forEach((h) => { nCurves += h.curves.length; }); }));
+  const curveSeg = segK > 0 ? Math.round(segK) : Math.max(8, Math.min(32, Math.round(2500 / Math.max(1, nCurves))));
+  const H = Math.max(1e-6, box.max.y - box.min.y), W = box.max.x - box.min.x;
+  const cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
+  const depth = Math.max(0.002, depthK) * H;
+  const b = Math.min(depth * 0.45, Math.max(0, bevK) * 0.05 * H);
+  parts.forEach((pt) => {
+    const g = new THREE.ExtrudeGeometry(pt.shapes, { depth, curveSegments: curveSeg, bevelEnabled: b > 0.0001, bevelThickness: b, bevelSize: b, bevelOffset: -b, bevelSegments: 5 });
+    g.translate(-cx, -cy, -(depth / 2 + b));
+    g.scale(1 / H, 1 / H, 1 / H);
+    pt.geo = creaseSides(g);
+    projectUVs(pt.geo, 1.6);
+    g.dispose();
+  });
+  return { parts, aspect: W / H };
+}
+function makeSvgMat(data, base) {
+  const pr = SVG_MATS[data.mat] || SVG_MATS.plastic;
+  const baseCol = new THREE.Color(data.matColor || pr.color || base);
+  const rough = data.matRough != null ? data.matRough : pr.rough;
+  const o = { roughness: rough, metalness: pr.metal, clearcoat: pr.clear ? (pr.clear === true ? 1 : pr.clear) : 0, clearcoatRoughness: 0.08, ior: 1.45 };
+  if (pr.glass) { o.transmission = pr.frost ? 0.9 : 1; o.thickness = pr.frost ? 0.5 : 0.4; }
+  if (pr.iris) { o.iridescence = pr.iris; o.iridescenceIOR = 1.8; o.iridescenceThicknessRange = [200, 800]; }
+  if (pr.sheen) { o.sheen = 1; o.sheenColor = new THREE.Color("#ffd9f0"); o.sheenRoughness = 0.4; }
+  o.color = pr.tex ? (pr.useBase ? new THREE.Color("#ffffff") : (data.matColor ? baseCol : new THREE.Color("#ffffff"))) : baseCol;
+  const m = new THREE.MeshPhysicalMaterial(o);
+  if (pr.neon) { m.emissive = baseCol.clone(); m.emissiveIntensity = 2.2; }
+  if (pr.tex) {
+    const T = getMatTex(pr.tex, pr.useBase ? "#" + baseCol.getHexString() : "");
+    m.map = T.map; m.roughnessMap = T.rough; m.bumpMap = T.bump; m.bumpScale = 3;
+    if (pr.metal > 0) { m.metalnessMap = T.metal; m.metalness = 1; }
+    if (pr.neonTex) { m.emissiveMap = T.emis; m.emissive = new THREE.Color("#ffffff"); m.emissiveIntensity = 1.8; }
+    m.needsUpdate = true;
+  }
+  return m;
+}
+function SvgExtrudeBody({ url, data, fade, hasFade, shadows }) {
+  const [built, setBuilt] = useState(null);
+  const ext = data.ext || 0, bev = data.bev ?? 0.3, seg = data.seg || 0;
+  const gref = useRef(null);
+  useEffect(() => {
+    let off = false;
+    fetchSvgText(url).then((t) => { if (off) return; try { setBuilt((prev) => { if (prev) prev.parts.forEach((pt) => pt.geo.dispose()); return buildSvgExtrude(t, ext, bev, seg); }); } catch (e) { console.warn("No se pudo extruir el SVG:", e && e.message); } }).catch(() => {});
+    return () => { off = true; };
+  }, [url, ext, bev, seg]);
+  const mats = useMemo(() => (built ? built.parts.map((pt) => makeSvgMat(data, pt.color)) : []), [built, data.mat, data.matColor, data.matRough]);
+  useEffect(() => () => mats.forEach((m) => m.dispose()), [mats]);
+  const envTex = useStudioEnv();
+  const envCfg = React.useContext(EnvSettingsCtx);
+  useEffect(() => {
+    if (!gref.current) return;
+    if (hasFade) patchFadeMaterial(mats, fade);
+    applyStudioEnv(gref.current, envTex, envCfg.enabled, envCfg.intensity);
+  }, [mats, envTex, envCfg.enabled, envCfg.intensity, hasFade, fade]);
+  if (!built) return null;
+  return (
+    <group ref={gref}>
+      {built.parts.map((pt, i) => <mesh key={i} geometry={pt.geo} material={mats[i]} scale={[1, -1, 1]} castShadow={shadows !== false} receiveShadow />)}
+    </group>
+  );
+}
+function SceneObjectSvgExtrude({ data }) {
+  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const body = <group ref={zRef}><SvgExtrudeBody url={data.url} data={data} fade={fade} hasFade={hasFade} shadows={data.shadows !== false} /></group>;
+  return <group ref={groupRef}>{data.billboard ? <Billboard>{body}</Billboard> : body}</group>;
+}
 function SceneObjectImageRaster({ data }) {
   const texture = useTexture(data.url);
   const aspect = texture.image ? texture.image.width / texture.image.height : 1;
@@ -3617,7 +3849,7 @@ function SceneObjectVideo({ data }) {
   );
 }
 function SceneObjectImage({ data }) {
-  return isSvgUrl(data.url) ? <SceneObjectImageSvg data={data} /> : <SceneObjectImageRaster data={data} />;
+  return isSvgUrl(data.url) ? ((data.ext || 0) > 0 ? <SceneObjectSvgExtrude data={data} /> : <SceneObjectImageSvg data={data} />) : <SceneObjectImageRaster data={data} />;
 }
 /* ============================================================
    HUMO / NIEBLA VOLUMÉTRICA: una caja que se dibuja con raymarching (se "recorre" cada rayo dentro del volumen sumando densidad).
@@ -4025,7 +4257,7 @@ function Lighting() {
 }
 function StudioLighting() {
   const get = () => blendScenes(scenes, useScrollStore.getState().smoothProgress);
-  return <StudioRigLights getLight={() => get().light} getLookAt={() => get().camera.lookAt} getCamPos={() => get().camera.position} exposure={EXPOSURE} mobile={false} />;
+  return <StudioRigLights getLight={() => get().light} getLookAt={() => get().camera.lookAt} getCamPos={() => get().camera.position} exposure={EXPOSURE} mobile={false} accent={ACCENT} />;
 }
 function ClassicLighting() {
   const keyRef = useRef(null);
@@ -4048,7 +4280,7 @@ function ClassicLighting() {
       keyRef.current.position.copy(dampedPos.current);
     }
     if (rimRef.current) {
-      rimRef.current.color.set(state.light.rimColor);
+      rimRef.current.color.set(ACCENT || state.light.rimColor);
       rimRef.current.intensity = damp(rimRef.current.intensity, LL.rim, 4, delta);
     }
     if (ambRef.current) ambRef.current.intensity = damp(ambRef.current.intensity, LL.amb, 4, delta);
@@ -5594,7 +5826,7 @@ function App() {
           </Canvas>
         </div>
         <BackgroundGradient stageRef={stageRef} />
-        {HALO > 0 && <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none", background: `radial-gradient(ellipse 75% 48% at 20% 0%, rgba(255,232,255,${0.34 * HALO}) 0%, rgba(196,140,255,${0.12 * HALO}) 42%, rgba(0,0,0,0) 74%)` }} />}
+        {HALO > 0 && <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none", background: `radial-gradient(ellipse 75% 48% at 20% 0%, ${accentHalo(ACCENT, HALO)[0]} 0%, ${accentHalo(ACCENT, HALO)[1]} 42%, rgba(0,0,0,0) 74%)` }} />}
         {VIGNETTE_ENABLED && (
           <div
             aria-hidden="true"
@@ -5640,6 +5872,8 @@ createRoot(document.getElementById("root")).render(<App />);
     "react-dom": "https://esm.sh/react-dom@18.3.1",
     "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
     "three": "https://esm.sh/three@0.160.0",
+    "three/examples/jsm/loaders/SVGLoader.js": "https://esm.sh/three@0.160.0/examples/jsm/loaders/SVGLoader.js?external=three",
+    "three/examples/jsm/utils/BufferGeometryUtils.js": "https://esm.sh/three@0.160.0/examples/jsm/utils/BufferGeometryUtils.js?external=three",
     "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.17.10?external=react,react-dom,three",
     "@react-three/drei": "https://esm.sh/@react-three/drei@9.114.3?external=react,react-dom,three,@react-three/fiber",
     "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.3?external=react,three,@react-three/fiber,postprocessing",
@@ -5655,6 +5889,8 @@ import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import * as THREE from "three";
+import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
+import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF, OrbitControls, Grid, useTexture, Billboard, Html, useProgress, MeshReflectorMaterial, ContactShadows } from "@react-three/drei";
 import { EffectComposer, Bloom, ToneMapping, N8AO, DepthOfField } from "@react-three/postprocessing";
@@ -6140,13 +6376,32 @@ function FadeGroup({ obj, fade, children }) {
 //@@use weebLightSet
 //@@use applyShapeLights
 //@@use lookLight
+//@@use SVG_MATS
+//@@use _mh
+//@@use _mn
+//@@use _mf
+//@@use _ss
+//@@use _mx
+//@@use _lin
+//@@use __matTexCache
+//@@use getMatTex
+//@@use creaseSides
+//@@use projectUVs
+//@@use __svgTextCache
+//@@use fetchSvgText
+//@@use buildSvgExtrude
+//@@use makeSvgMat
+//@@use SvgExtrudeBody
+//@@use accentTone
+//@@use accentHalo
 //@@use NaturalFill
 //@@use buildStudioEnvTexture
 const __studioEnvCache = new WeakMap();
-function getStudioEnv(gl) {
-  let t = __studioEnvCache.get(gl);
-  if (!t) { t = buildStudioEnvTexture(gl); __studioEnvCache.set(gl, t); }
-  return t;
+function getStudioEnv(gl, accent) {
+  let m = __studioEnvCache.get(gl); if (!m) { m = {}; __studioEnvCache.set(gl, m); }
+  const k = accent || "";
+  if (!m[k]) m[k] = buildStudioEnvTexture(gl, accent);
+  return m[k];
 }
 //@@use useStudioEnv
 //@@use applyStudioEnv
@@ -6214,7 +6469,7 @@ function ReflectorFloor({ mesh, root, strength, mobile, contact, contactOpacity,
 //@@use ReflectorFloors
 const SCREEN_GLASS_DEFAULT = "pantalla|screen|display|foto|photo|vidrio|glass";
 //@@use applyScreenGlass
-const EnvSettingsCtx = React.createContext({ enabled: false, intensity: 1, rig: "classic", floor: { enabled: true, strength: 0.5, contact: false, contactOpacity: 0.75 } });   // el editor lo provee desde Scene (postFx)
+const EnvSettingsCtx = React.createContext({ enabled: false, intensity: 1, rig: "classic", accent: "", floor: { enabled: true, strength: 0.5, contact: false, contactOpacity: 0.75 } });   // el editor lo provee desde Scene (postFx)
 //@@use applyGlow
 //@@use cloneModelScene
 //@@use useClonedScene
@@ -6422,6 +6677,16 @@ function ObjectPreviewText({ obj, fade }) {
   return obj.billboard ? <Billboard position={obj.position}>{mesh}</Billboard> : mesh;
 }
 
+function ObjectPreviewSvgExtrude({ obj, fade }) {
+  const sc = obj.scale;
+  const body = (
+    <group scale={[sc * (obj.sx ?? 1), sc * (obj.sy ?? 1), sc]} position={obj.billboard ? [0, 0, 0] : obj.position}
+      rotation={obj.billboard ? [0, 0, ((obj.rz || 0) * Math.PI) / 180] : eulYXZ(obj.rx, obj.rotationY, obj.rz)}>
+      <SvgExtrudeBody url={obj.previewUrl || obj.url} data={obj} fade={fade} hasFade shadows />
+    </group>
+  );
+  return obj.billboard ? <Billboard position={obj.position}>{body}</Billboard> : body;
+}
 function ObjectPreviewImageRaster({ obj, fade }) {
   const texture = useTexture(obj.previewUrl || obj.url);
   const aspect = texture.image ? texture.image.width / texture.image.height : 1;
@@ -6492,7 +6757,7 @@ function ObjectPreviewShape({ obj, fade }) {
     : <group position={obj.position} rotation={[0, (obj.rotationY * Math.PI) / 180, 0]}>{mesh}</group>;
 }
 function ObjectPreviewImage({ obj, fade }) {
-  return isSvgUrl(obj.url) ? <ObjectPreviewImageSvg obj={obj} fade={fade} /> : <ObjectPreviewImageRaster obj={obj} fade={fade} />;
+  return isSvgUrl(obj.url) ? ((obj.ext || 0) > 0 ? <ObjectPreviewSvgExtrude obj={obj} fade={fade} /> : <ObjectPreviewImageSvg obj={obj} fade={fade} />) : <ObjectPreviewImageRaster obj={obj} fade={fade} />;
 }
 function eulYXZ(rx, ry, rz) { return new THREE.Euler(((rx || 0) * Math.PI) / 180, ((ry || 0) * Math.PI) / 180, ((rz || 0) * Math.PI) / 180, "YXZ"); }
 function ObjectPreviewSmoke({ obj }) {
@@ -6634,13 +6899,14 @@ function Scene({ pose, onBonesFound, cameraTarget, sceneCameraActive, autoRotate
     contact: !!(showFx && postFx && postFx.contactShadow),
     contactOpacity: (postFx && postFx.contactShadowOpacity) ?? 0.75,
   };
-  const envCtx = useMemo(() => ({ enabled: envOn, intensity: envInt, rig, floor: floorCfg }),
-    [envOn, envInt, rig, floorCfg.enabled, floorCfg.strength, floorCfg.contact, floorCfg.contactOpacity]);
+  const accentC = (showFx && postFx && postFx.accent) || "";
+  const envCtx = useMemo(() => ({ enabled: envOn, intensity: envInt, rig, accent: accentC, floor: floorCfg }),
+    [envOn, envInt, rig, accentC, floorCfg.enabled, floorCfg.strength, floorCfg.contact, floorCfg.contactOpacity]);
   return (
     <EnvSettingsCtx.Provider value={envCtx}>
       {showFx && fx.fog.enabled !== false && <fogExp2 attach="fog" args={[fx.fog.color, 1 / Math.max(fx.fog.far, 1)]} />}
       {rig === "studio" ? (
-        <StudioRigLights getLight={() => fx.light} getLookAt={() => (cameraTarget && cameraTarget.lookAt) || [0, 0.5, 0]}
+        <StudioRigLights accent={postFx && postFx.accent} getLight={() => fx.light} getLookAt={() => (cameraTarget && cameraTarget.lookAt) || [0, 0.5, 0]}
           getCamPos={() => (cameraTarget && cameraTarget.position) || [0, 0, 9]}
           exposure={postFx && postFx.exposure != null ? postFx.exposure : 1} />
       ) : (<>
@@ -6662,7 +6928,7 @@ function Scene({ pose, onBonesFound, cameraTarget, sceneCameraActive, autoRotate
         shadow-camera-far={20}
       />
       <directionalLight position={[-3, 2, -2]} intensity={0.4} />
-      <pointLight color={showFx ? fx.light.rimColor : "#ffffff"} position={[-2.5, -1, -2]} intensity={LL ? LL.rim : 0} distance={12} />
+      <pointLight color={showFx ? ((postFx && postFx.accent) || fx.light.rimColor) : "#ffffff"} position={[-2.5, -1, -2]} intensity={LL ? LL.rim : 0} distance={12} />
       <NaturalFill intensity={LL ? LL.fill : 0} />
       </>)}
       {showGrid && <BlenderGrid />}
@@ -7341,7 +7607,8 @@ const CHAR_SCALE = ${fmtNum(scale)};`;
 }
 
 function generatePostFxCode(postFx) {
-  return `const HALO = ${postFx.halo ?? 0};
+  return `const ACCENT = ${JSON.stringify(/^#[0-9a-fA-F]{6}$/.test(postFx.accent || "") ? postFx.accent : "")};
+const HALO = ${postFx.halo ?? 0};
 const PHONE_COLUMN = ${postFx.phoneColumn === true ? "true" : "false"};
 const VIGNETTE_ENABLED = ${postFx.vignetteEnabled ? "true" : "false"};
 const VIGNETTE_DARKNESS = ${postFx.vignetteDarkness};
@@ -7460,7 +7727,63 @@ function generateLoaderCss(loader) {
   return `:root { --ldr-bg: ${m.background}; --ldr-line: ${m.lineColor}; --ldr-font: ${m.font}; }`;
 }
 
+
+/* ---- Grupos (objeto madre → hijos) ----
+   Un objeto puede tener una "madre" (o.parent). Lo que se guarda en el hijo es su transformación RELATIVA a la madre en cada pose,
+   así al mover / escalar / girar la madre de una pose a otra, todos los hijos viajan en bloque. El visor y la exportación
+   componen la transformación final (mundo) y escriben keyframes normales: el sitio exportado no necesita nada extra. */
+const GRP_DEF = () => ({ position: [0, 0, 0], scale: 1, rotationY: 0, hidden: false, fadeDir: "ltr" });
+function tfMatrix(t) {
+  const s = t.scale ?? 1, sx = t.sx ?? 1, sy = t.sy ?? 1;
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(((t.rx || 0) * Math.PI) / 180, ((t.rotationY || 0) * Math.PI) / 180, 0, "YXZ"));
+  return new THREE.Matrix4().compose(new THREE.Vector3(...(t.position || [0, 0, 0])), q, new THREE.Vector3(s * sx, s * sy, s));
+}
+function matToTf(m, base) {
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  m.decompose(p, q, sc);
+  const e = new THREE.Euler().setFromQuaternion(q, "YXZ");
+  const sz = Math.abs(sc.z) || 1e-6;
+  return { ...base, position: [p.x, p.y, p.z], scale: sz, sx: sc.x / sz, sy: sc.y / sz, rotationY: (e.y * 180) / Math.PI, rx: (e.x * 180) / Math.PI };
+}
+function composeGroups(objects, tfByKf, stages) {
+  const byId = {}; objects.forEach((o) => { byId[o.id] = o; });
+  if (!objects.some((o) => o.parent && byId[o.parent])) return tfByKf;
+  const memo = {};
+  const world = (id, k, depth) => {
+    const key = id + "|" + k;
+    if (memo[key]) return memo[key];
+    const o = byId[id];
+    let m = tfMatrix((tfByKf[id] && tfByKf[id][k]) || GRP_DEF());
+    if (o && o.parent && byId[o.parent] && depth < 8) m = world(o.parent, k, depth + 1).clone().multiply(m);
+    memo[key] = m;
+    return m;
+  };
+  const out = { ...tfByKf };
+  objects.forEach((o) => {
+    if (!(o.parent && byId[o.parent])) return;
+    const per = {};
+    stages.forEach((st) => { per[st.id] = matToTf(world(o.id, st.id, 0), (tfByKf[o.id] && tfByKf[o.id][st.id]) || GRP_DEF()); });
+    out[o.id] = per;
+  });
+  return out;
+}
+/* Cambia la madre de un objeto SIN moverlo de donde está: recalcula su transformación relativa en cada pose. */
+function reparentObject(objects, tfByKf, stages, id, parentId) {
+  const before = composeGroups(objects, tfByKf, stages);
+  const nextObjects = objects.map((o) => (o.id === id ? { ...o, parent: parentId || null } : o));
+  const after = composeGroups(nextObjects, tfByKf, stages);
+  const per = {};
+  stages.forEach((st) => {
+    const stored = (tfByKf[id] && tfByKf[id][st.id]) || GRP_DEF();
+    const Mw = tfMatrix((before[id] && before[id][st.id]) || stored);
+    let Ml = Mw;
+    if (parentId) { const Mp = tfMatrix((after[parentId] && after[parentId][st.id]) || GRP_DEF()); Ml = Mp.clone().invert().multiply(Mw); }
+    per[st.id] = matToTf(Ml, stored);
+  });
+  return { objects: nextObjects, tf: { ...tfByKf, [id]: per } };
+}
 function generateObjectsCode(objects, transformsByKf, stages, easings) {
+  transformsByKf = composeGroups(objects, transformsByKf, stages);
   objects = objects.filter((o) => o.type === "text" || o.type === "shape" || o.type === "light" || o.type === "smoke" || (o.url && o.url.trim()));
   const fmtNum = (n) => (Math.abs(n) < 0.0001 ? 0 : Math.round(n * 1000) / 1000);
   const fmtVec = (v) => `[${v.map(fmtNum).join(", ")}]`;
@@ -7573,6 +7896,12 @@ ${kfLines}
     borderWidth: ${fmtNum(o.borderWidth || 0)},
     borderColor: ${JSON.stringify(o.borderColor || "#ffffff")},
     billboard: ${o.billboard ? "true" : "false"},
+    ext: ${fmtNum(o.ext || 0)},
+    bev: ${fmtNum(o.bev ?? 0.3)},
+    seg: ${fmtNum(o.seg || 0)},
+    mat: ${JSON.stringify(o.mat || "plastic")},
+    matColor: ${JSON.stringify(o.matColor || "")},
+    matRough: ${o.matRough != null ? fmtNum(o.matRough) : "null"},
     keyframes: [
 ${kfLines}
     ],
@@ -8355,13 +8684,14 @@ function paintVideoBackground(ctx, w, h, bg) {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, w, h);
 }
-function paintVideoHalo(ctx, w, h, halo) {
+function paintVideoHalo(ctx, w, h, halo, accent) {
+  const hc = accentHalo(accent, halo);
   ctx.save();
   ctx.translate(w * 0.2, 0);
   ctx.scale(w * 0.75, h * 0.48);
   const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-  g.addColorStop(0, `rgba(255,232,255,${0.34 * halo})`);
-  g.addColorStop(0.42, `rgba(196,140,255,${0.12 * halo})`);
+  g.addColorStop(0, hc[0]);
+  g.addColorStop(0.42, hc[1]);
   g.addColorStop(0.74, "rgba(0,0,0,0)");
   g.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = g;
@@ -8758,6 +9088,10 @@ function App() {
   const [selectedObj, setSelectedObj] = useState(null);
   const [lightGap, setLightGap] = useState(1.2);
   const [showObjects, setShowObjects] = useState(true);
+  const [showGhosts, setShowGhosts] = useState(false);     // objetos ocultos en esta pose (se dibujan tenues)
+  const [labelMode, setLabelMode] = useState("visible");     // etiquetas del visor: all | visible | sel | none
+  const [isolate, setIsolate] = useState(false);              // solo el objeto seleccionado y su grupo
+  const [objSearch, setObjSearch] = useState("");
   const [showGrid, setShowGrid] = useState(true);
   const [showFx, setShowFx] = useState(true);
   const [showMobileFrame, setShowMobileFrame] = useState(true);
@@ -8811,9 +9145,19 @@ function App() {
     setObjects((prev) => { const i = prev.findIndex((o) => o.id === id); const nx = [...prev]; nx.splice(i + 1, 0, ...newObjs); return nx; });
     setObjectTransformsByKf((prev) => ({ ...prev, ...newTr, [id]: shifted(-half * gap) }));
   };
+  const setObjectParent = (id, parentId) => {
+    const r = reparentObject(objects, objectTransformsByKf, stagesComputed, id, parentId);
+    setObjects(r.objects);
+    setObjectTransformsByKf(r.tf);
+  };
+  /* Si se borra una madre, sus hijos se sueltan (o pasan a la madre de la madre) quedándose donde estaban. */
   const removeObject = (id) => {
-    setObjects((prev) => prev.filter((o) => o.id !== id));
-    setObjectTransformsByKf((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    let objs = objects, tf = objectTransformsByKf;
+    const gp = (objects.find((o) => o.id === id) || {}).parent || null;
+    objects.filter((o) => o.parent === id).forEach((c) => { const r = reparentObject(objs, tf, stagesComputed, c.id, gp); objs = r.objects; tf = r.tf; });
+    const nextTf = { ...tf }; delete nextTf[id];
+    setObjects(objs.filter((o) => o.id !== id));
+    setObjectTransformsByKf(nextTf);
   };
   const updateObject = (id, patch) => setObjects((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)));
   const setObjectTransform = (id, field, axis, value) => {
@@ -9189,12 +9533,13 @@ function App() {
   const renderFx = sampled ? sampleFx(fxByKf, scrubV, stagesComputed, easings) : fxByKf[activeStage];
   // Progreso de scroll que ve el video en el visor: en Preview es el del slider; en edición, el de la pose activa.
   const scrollProgressNow = sampled ? scrubV : ((stagesComputed.find((st) => st.id === activeStage) || {}).progress || 0);
+  const worldTf = useMemo(() => composeGroups(objects, objectTransformsByKf, stagesComputed), [objects, objectTransformsByKf, stagesComputed]);
   const renderObjects = useMemo(() => objects.map((o) => {
-    const transforms = objectTransformsByKf[o.id];
+    const transforms = worldTf[o.id];
     if (!transforms) return { ...o, ...editFade(defaultObjectTransform()), scrollProgress: scrollProgressNow, lightHelper: !exporting };
     const t = sampled ? sampleObjectTransform(transforms, scrubV, stagesComputed, easings) : editFade(transforms[activeStage] || defaultObjectTransform());
     return { ...o, ...t, scrollProgress: scrollProgressNow, lightHelper: !exporting };
-  }), [objects, objectTransformsByKf, sampled, scrubV, stagesComputed, easings, activeStage, scrollProgressNow, exporting]);
+  }), [objects, worldTf, sampled, scrubV, stagesComputed, easings, activeStage, scrollProgressNow, exporting]);
   const sceneCameraActive = exporting || !freeOrbit;
 
   const boneCode = useMemo(() => generateBoneArrayCode(posesByKf, stagesComputed, easings), [posesByKf, stagesComputed, easings]);
@@ -9438,7 +9783,7 @@ function App() {
         const bg = sampleFx(fxByKf, t, stagesComputed, easings).background;
         paintVideoBackground(ctx, rw, rh, bg);
         ctx.drawImage(b.canvas, 0, 0, rw, rh);
-        if ((postFx.halo || 0) > 0) paintVideoHalo(ctx, rw, rh, postFx.halo);
+        if ((postFx.halo || 0) > 0) paintVideoHalo(ctx, rw, rh, postFx.halo, postFx.accent);
         if (postFx.vignetteEnabled) paintVideoVignette(ctx, rw, rh, postFx.vignetteOffset == null ? 0.15 : postFx.vignetteOffset, postFx.vignetteDarkness == null ? 0.5 : postFx.vignetteDarkness);
         if (full !== out) octx.drawImage(full, 0, cropSy, w, h, 0, 0, w, h);   // 4:5 = recorte del 9:16
 
@@ -9517,7 +9862,30 @@ function App() {
   const goStage = (d) => { const t = stagesComputed[clamp(stageIndex + d, 0, nStages - 1, )]; if (t) setActiveStage(t.id); };
   const colorOf = (o, i) => o.color || PALETTE[i % PALETTE.length];
   const selObj = objects.find((o) => o.id === selectedObj) || null;
-  const markers = renderObjects.map((o, i) => ({ id: o.id, label: o.label, color: colorOf(o, i), position: o.position, visible: o.visible, hidden: !!o.hidden }));
+  /* Orden en el visor (solo en edición; la exportación y el preview siempre muestran todo):
+     - fantasmas: los objetos ocultos en esta pose se dibujan tenues; con 100+ objetos tapan todo, así que se pueden apagar.
+     - aislar: deja solo el objeto seleccionado con su grupo (madre e hijos). Las luces siempre quedan. */
+  let viewObjects = renderObjects;
+  if (!exporting) {
+    let groupIds = null;
+    if (isolate && selObj) {
+      groupIds = new Set([selObj.id]);
+      for (let cur = selObj; cur && cur.parent && objects.some((q) => q.id === cur.parent) && groupIds.size < 400; cur = objects.find((q) => q.id === cur.parent)) groupIds.add(cur.parent);
+      let grew = true;
+      while (grew) { grew = false; objects.forEach((q) => { if (q.parent && groupIds.has(q.parent) && !groupIds.has(q.id)) { groupIds.add(q.id); grew = true; } }); }
+    }
+    viewObjects = renderObjects.filter((o) => {
+      if (selObj && o.id === selObj.id) return true;
+      if (o.type === "light") return true;
+      if (groupIds && !groupIds.has(o.id)) return false;
+      if (!showGhosts && !sampled && o.editGhost) return false;
+      return true;
+    });
+  }
+  const markers = viewObjects
+    .map((o) => ({ o, i: renderObjects.indexOf(o) }))
+    .filter(({ o }) => labelMode === "all" || (labelMode === "visible" && !o.hidden && o.visible) || (selObj && o.id === selObj.id))
+    .map(({ o, i }) => ({ id: o.id, label: o.label, color: colorOf(o, i), position: o.position, visible: o.visible, hidden: !!o.hidden }));
   const toast = projectLoaded ? "Proyecto cargado" : downloaded ? "index.html descargado" : copiedWhich ? "Copiado" : null;
   const fileName = (projectName || "proyecto").trim().replace(/[^a-zA-Z0-9._-]+/g, "_") || "proyecto";
 
@@ -9754,13 +10122,45 @@ function App() {
         {(isText || isImage || (isShape && !o.phys)) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
         {(isText || isImage || (isShape && !o.phys)) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
         {(isText || isImage || (isShape && !o.phys)) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
+        {isImage && isSvgUrl(o.url) && (
+          <>
+            <div className="grp-t" style={{ marginTop: 4 }}>Volumen 3D (extruir el logo)</div>
+            <Slider label="Grosor (0 = plano)" min={0} max={0.6} step={0.005} value={o.ext || 0} onChange={(v) => updateObject(o.id, { ext: v, ...(v > 0 && !o.ext && o.billboard ? { billboard: false } : {}) })} />
+            {(o.ext || 0) > 0 && (
+              <>
+                <Slider label="Bisel (borde redondeado)" min={0} max={1} step={0.01} value={o.bev ?? 0.3} onChange={(v) => updateObject(o.id, { bev: v })} />
+                <Slider label="Suavidad de curvas (0 = auto)" min={0} max={64} step={1} value={o.seg || 0} onChange={(v) => updateObject(o.id, { seg: v })} />
+                <SelectRow label="Material" value={o.mat || "plastic"} onChange={(v) => updateObject(o.id, { mat: v, matRough: null })} options={Object.entries(SVG_MATS).map(([k, m]) => [k, m.label])} />
+                <ColorRow label="Color" value={o.matColor || "#ffffff"} onChange={(v) => updateObject(o.id, { matColor: v })} />
+                <div className="tools"><Btn title="Usa el color que trae el SVG (el oro y el cromo usan el suyo)" onClick={() => updateObject(o.id, { matColor: "" })}>Color original del SVG</Btn></div>
+                <Slider label="Rugosidad" min={0} max={1} step={0.01} value={o.matRough != null ? o.matRough : (SVG_MATS[o.mat || "plastic"] || SVG_MATS.plastic).rough} onChange={(v) => updateObject(o.id, { matRough: v })} />
+                <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Reacciona a la luz de la escena y a tus spots. Los metales y el cromo necesitan el «Entorno de reflejos» prendido (Look). Con «Billboard» el logo mira siempre a cámara y no se ve el volumen: apagalo y usá «Giro Y» para girarlo. El vidrio es más pesado en celulares.</div>
+              </>
+            )}
+          </>
+        )}
+        {!isLight && !isSmoke && objects.length > 1 && (() => {
+          const desc = new Set([o.id]); let grew = true;
+          while (grew) { grew = false; objects.forEach((q) => { if (q.parent && desc.has(q.parent) && !desc.has(q.id)) { desc.add(q.id); grew = true; } }); }
+          const opts = [["", "— ninguna (va sola) —"], ...objects.filter((q) => !desc.has(q.id) && q.type !== "light" && q.type !== "smoke").map((q) => [q.id, q.label])];
+          const kids = objects.filter((q) => q.parent === o.id);
+          return (
+            <>
+              <div className="grp-t" style={{ marginTop: 4 }}>Grupo</div>
+              <SelectRow label="Sigue a (madre)" value={o.parent || ""} onChange={(v) => setObjectParent(o.id, v)} options={opts} />
+              <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>
+                {o.parent ? "Este objeto viaja con su madre: al mover, escalar o girar la madre en cada pose, él se mueve en bloque. Sus propios valores (Posición, Escala, Giro) son relativos a la madre, así que podés mantener la forma del conjunto o animarlo aparte. Aparecer/desaparecer sigue siendo propio de cada uno." : kids.length ? `Madre de: ${kids.map((q) => q.label).join(", ")}. Moverla mueve a todos sus hijos.` : "Elegí una madre para que este objeto se mueva en bloque con ella. No se mueve de donde está al vincularlo."}
+              </div>
+            </>
+          );
+        })()}
         <div className="grp-t" style={{ marginTop: 4 }}>Transformación · {currentStageLabel}</div>
         <Slider label="Escala" min={0.05} max={20} step={0.01} value={t.scale} onChange={(v) => setObjectTransform(o.id, "scale", null, v)} />
         {!isModel && <Slider label="Estirar ancho" min={0.05} max={6} step={0.01} value={t.sx ?? 1} onChange={(v) => setObjectTransform(o.id, "sx", null, v)} />}
         {!isModel && <Slider label="Desenfoque" min={0} max={30} step={0.1} value={t.bl || 0} onChange={(v) => setObjectTransform(o.id, "bl", null, v)} />}
         {!isModel && (t.bl || 0) > 0 && <div className="tools"><Btn title="Mismo desenfoque en todas las poses" onClick={() => setObjectAllStages(o.id, "bl", t.bl || 0)}>Desenfoque en todas las poses</Btn><Btn onClick={() => setObjectAllStages(o.id, "bl", 0)}>Quitar en todas</Btn></div>}
         {!isModel && <Slider label="Estirar alto" min={0.05} max={6} step={0.01} value={t.sy ?? 1} onChange={(v) => setObjectTransform(o.id, "sy", null, v)} />}
-        <Vec3 label="Posición" value={t.position} onChange={(a, v) => setObjectTransform(o.id, "position", a, v)} />
+        <Vec3 label={o.parent ? "Posición (relativa a la madre)" : "Posición"} value={t.position} onChange={(a, v) => setObjectTransform(o.id, "position", a, v)} />
         {!(!isModel && o.billboard) && <Slider label="Giro Y" min={-180} max={180} step={0.1} value={t.rotationY} onChange={(v) => setObjectTransform(o.id, "rotationY", null, v)} />}
         {(
           <>
@@ -9837,15 +10237,23 @@ function App() {
           {[["Libre", freeOrbit, setFreeOrbit], ["Rotar", autoRotate, setAutoRotate, freeOrbit], ["Objetos", showObjects, setShowObjects], ["Grilla", showGrid, setShowGrid], ["Ambiente", showFx, setShowFx], ["9:16", showMobileFrame, setShowMobileFrame]]
             .filter((c) => c[3] === undefined || c[3])
             .map(([t, on, set]) => <span key={t} className={`vchip ${on ? "on" : ""}`} onClick={() => set(!on)}>{t}</span>)}
+          {section === "objects" && showObjects && (
+            <>
+              <span className="vchip" style={{ opacity: 0.35, padding: 0, width: 1 }} />
+              <span className={`vchip ${isolate ? "on" : ""}`} title="Muestra solo el objeto seleccionado con su grupo (madre e hijos)" onClick={() => setIsolate(!isolate)}>Aislar</span>
+              <span className={`vchip ${showGhosts ? "on" : ""}`} title="Dibuja tenues los objetos que están ocultos en esta pose" onClick={() => setShowGhosts(!showGhosts)}>Fantasmas</span>
+              <span className="vchip on" title="Qué etiquetas se ven en el visor: todas, solo los visibles en esta pose, solo el seleccionado o ninguna" onClick={() => setLabelMode(labelMode === "all" ? "visible" : labelMode === "visible" ? "sel" : labelMode === "sel" ? "none" : "all")}>Etiquetas: {labelMode === "all" ? "todas" : labelMode === "visible" ? "visibles" : labelMode === "sel" ? "selección" : "ninguna"}</span>
+            </>
+          )}
         </div>
         <div className="scene-box" style={vidBox ? { position: "fixed", inset: "auto", left: 0, top: 0, width: vidBox.w, height: vidBox.h } : undefined}>
         <Canvas key={canvasKey} onCreated={onCanvasCreated} shadows="soft" camera={{ position: [0, 0.3, 3.5], fov: 35 }} dpr={exporting ? 1 : [1, 1.5]} gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}>
-          <Scene pose={currentPose} onBonesFound={setFoundMap} cameraTarget={currentCamTarget} sceneCameraActive={sceneCameraActive} autoRotate={!exporting && autoRotate} movement={currentMovement} objects={renderObjects} showObjects={exporting || showObjects} showGrid={!exporting && showGrid} fx={renderFx} showFx={exporting || showFx} orbitRef={orbitRef} liveCameraRef={liveCameraRef} modelUrl={modelUrl} postFx={postFx} charScale={charScale} charCenterY={charCenterY} charAnchorRef={charAnchorRef} trail={trail} reflection={reflection}
-            markers={!exporting && section === "objects" && showObjects ? markers : null} selectedObjectId={selectedObj} onSelectObject={setSelectedObj} />
+          <Scene pose={currentPose} onBonesFound={setFoundMap} cameraTarget={currentCamTarget} sceneCameraActive={sceneCameraActive} autoRotate={!exporting && autoRotate} movement={currentMovement} objects={exporting ? renderObjects : viewObjects} showObjects={exporting || showObjects} showGrid={!exporting && showGrid} fx={renderFx} showFx={exporting || showFx} orbitRef={orbitRef} liveCameraRef={liveCameraRef} modelUrl={modelUrl} postFx={postFx} charScale={charScale} charCenterY={charCenterY} charAnchorRef={charAnchorRef} trail={trail} reflection={reflection}
+            markers={!exporting && section === "objects" && showObjects && labelMode !== "none" ? markers : (!exporting && section === "objects" && showObjects && selObj ? markers.filter((m) => m.id === selObj.id) : null)} selectedObjectId={selectedObj} onSelectObject={setSelectedObj} />
           <VideoExportBridge tag={exportT} bridgeRef={vidBridge} />
         </Canvas>
         </div>
-        {showFx && (postFx.halo || 0) > 0 && <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none", background: `radial-gradient(ellipse 75% 48% at 20% 0%, rgba(255,232,255,${0.34 * postFx.halo}) 0%, rgba(196,140,255,${0.12 * postFx.halo}) 42%, rgba(0,0,0,0) 74%)` }} />}
+        {showFx && (postFx.halo || 0) > 0 && <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none", background: `radial-gradient(ellipse 75% 48% at 20% 0%, ${accentHalo(postFx.accent, postFx.halo)[0]} 0%, ${accentHalo(postFx.accent, postFx.halo)[1]} 42%, rgba(0,0,0,0) 74%)` }} />}
         {showFx && postFx.vignetteEnabled && (
           <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 3, pointerEvents: "none", background: `radial-gradient(ellipse farthest-corner at center, transparent ${(1 - postFx.vignetteOffset) * 100}%, rgba(0,0,0,${postFx.vignetteDarkness}) 100%)` }} />
         )}
@@ -10169,6 +10577,8 @@ function App() {
                     <Slider label="Intensidad" min={0} max={3} step={0.05} value={postFx.envIntensity ?? 0.8} onChange={(v) => setPostFxField("envIntensity", v)} />
                   </Group>
                   <Group id="rig" title="Luz de estudio y piso">
+                    <ColorRow label="Color de acento" value={postFx.accent || "#ffffff"} onChange={(v) => setPostFxField("accent", v)} />
+                    <div style={{ fontSize: 10.5, opacity: 0.65, lineHeight: 1.4 }}>Cambia de una vez el color del contraluz, del entorno de reflejos y del foco de fondo (el lila/magenta de Estudio). Blanco = neutro. <span style={{ color: "var(--acc)", cursor: "pointer", textDecoration: "underline" }} onClick={() => setPostFxField("accent", "")}>Volver al color original (por pose)</span>{postFx.accent ? ` · Activo: ${postFx.accent}` : " · Activo: original"}</div>
                     <Seg value={postFx.lightRig === "studio" ? "studio" : "classic"} onChange={(v) => setPostFxField("lightRig", v)} options={[["classic", "Clásica"], ["studio", "Estudio"]]} />
                     <div style={{ fontSize: 10.5, opacity: 0.65, lineHeight: 1.4 }}>Estudio: un spot con sombra suave + rim de color atrás + softboxes para los reflejos, casi sin luz ambiente. Usa la dirección, color e intensidad de la luz de cada pose. El tone mapping ahora va siempre (antes con Bloom los colores se quemaban).</div>
                     <Slider label="Umbral bloom" min={0} max={1.5} step={0.01} value={postFx.bloomThreshold ?? 0.25} onChange={(v) => setPostFxField("bloomThreshold", v)} />
@@ -10336,11 +10746,12 @@ function App() {
                   <IBtn icon="pin" title="Fijar todos en todas las poses" disabled={!objects.length} onClick={applyAllObjectTransformsToAllStages} />
                 </div>
                 {objects.length > 3 && <Switch checked={objOnlyVisible} onChange={setObjOnlyVisible} label={`Solo los visibles en esta pose (${objects.filter(isVisibleHere).length} de ${objects.length})`} />}
+                {objects.length > 6 && <input type="text" placeholder={`Buscar entre ${objects.length} objetos…`} value={objSearch} onChange={(e) => setObjSearch(e.target.value)} style={{ width: "100%", marginBottom: 6 }} />}
                 <div className="outliner">
-                  {objects.map((o, i) => (objOnlyVisible && !isVisibleHere(o) && !(selObj && selObj.id === o.id)) ? null : (
+                  {objects.map((o, i) => (objOnlyVisible && !isVisibleHere(o) && !(selObj && selObj.id === o.id)) || (objSearch.trim() && !String(o.label).toLowerCase().includes(objSearch.trim().toLowerCase()) && !(selObj && selObj.id === o.id)) ? null : (
                     <div key={o.id} className={`orow ${selObj && selObj.id === o.id ? "sel" : ""} ${o.visible && !(objectTransformsByKf[o.id] && objectTransformsByKf[o.id][activeStage] && objectTransformsByKf[o.id][activeStage].hidden) ? "" : "off"}`} style={{ "--oc": colorOf(o, i) }} onClick={() => setSelectedObj(o.id)}>
                       <span className="oico"><Icon name={o.type === "text" ? "text" : o.type === "shape" ? "shape" : o.type === "light" ? "light" : o.type === "smoke" ? "smoke" : o.type === "image" ? "image" : o.type === "video" ? "video" : "cube"} size={15} /></span>
-                      <span className="oname">{o.label}</span>
+                      <span className="oname">{o.parent && objects.some((q) => q.id === o.parent) ? "↳ " : ""}{o.label}{objects.some((q) => q.parent === o.id) ? " ⛓" : ""}</span>
                       <button className="mini" title="Visible" onClick={(e) => { e.stopPropagation(); updateObject(o.id, { visible: !o.visible }); }}><Icon name={o.visible ? "eye" : "eyeoff"} size={14} /></button>
                       <button className="mini" title="Duplicar (usa el mismo archivo)" onClick={(e) => { e.stopPropagation(); duplicateObject(o.id); }}><Icon name="copy" size={14} /></button>
                       <button className="mini danger" title="Eliminar" onClick={(e) => { e.stopPropagation(); removeObject(o.id); }}><Icon name="trash" size={14} /></button>
