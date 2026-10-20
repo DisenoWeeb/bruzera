@@ -2769,7 +2769,25 @@ function sampleObjectKeyframes(keyframes, progress) {
   };
 }
 
-function useObjectTransformRef(keyframes, billboard, own) {
+/* Flotar siempre: un vaivén suave que no depende del scroll (sube y baja y se mece un poco), con su propio ritmo por
+   objeto. En el MP4 usa el tiempo del video (window.__wsExportTime), así sale fluido y repetible. */
+const _FLO = { dy: 0, ry: 0, rz: 0 };
+function floatOffset(data, clockT) {
+  const amp = data && data.float > 0 ? data.float : 0;
+  if (!amp) { _FLO.dy = 0; _FLO.ry = 0; _FLO.rz = 0; return _FLO; }
+  const ext = typeof window !== "undefined" ? window.__wsExportTime : null;
+  const t = ext != null ? ext : clockT;
+  const sp = data.floatSpeed > 0 ? data.floatSpeed : 1;
+  let h = 0; const id = String(data.id || data.url || ""); for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 9973;
+  const ph = (h / 9973) * Math.PI * 2;
+  const w = (Math.PI * 2 * sp) / 3.2;                       // un ciclo cada 3,2 s con velocidad 1
+  const rot = Math.min(0.2, amp * 0.7);                      // se mece en proporción a la altura (máx ~11°)
+  _FLO.dy = amp * Math.sin(t * w + ph);
+  _FLO.ry = rot * Math.sin(t * w * 0.77 + ph * 1.7);
+  _FLO.rz = rot * 0.6 * Math.sin(t * w * 0.61 + ph * 2.3);
+  return _FLO;
+}
+function useObjectTransformRef(keyframes, billboard, own, data) {
   const groupRef = useRef(null);
   const fade = useMemo(() => makeFadeUniforms(), []);
   const hasFadeOnly = useMemo(() => keyframes.some((k) => k.hidden), [keyframes]);
@@ -2792,16 +2810,17 @@ function useObjectTransformRef(keyframes, billboard, own) {
     b.sx = damp(b.sx, kf.sx ?? 1, 4, delta);
     b.sy = damp(b.sy, kf.sy ?? 1, 4, delta);
     const an = hasFadeOnly && !own ? animFor(kf.fade.dir, kf.fade.amt, kf.fade.out) : _ANIM_ID;
-    g.position.set(b.x + an.dx, b.y + an.dy, b.z);
+    const fl = floatOffset(data, state.clock.elapsedTime);
+    g.position.set(b.x + an.dx, b.y + an.dy + fl.dy, b.z);
     g.scale.set(b.s * b.sx * an.s * an.sx, b.s * b.sy * an.s * an.sy, b.s * an.s);
     if (!billboard) {
       g.rotation.order = "YXZ";
-      g.rotation.y = damp(g.rotation.y, (kf.rotationY * Math.PI) / 180, 4, delta);
+      g.rotation.y = damp(g.rotation.y, (kf.rotationY * Math.PI) / 180 + fl.ry, 4, delta);
       g.rotation.x = damp(g.rotation.x, ((kf.rx || 0) * Math.PI) / 180, 4, delta);   // inclinación (acostar como piso)
     }
     if (hasFade) driveFade(g, state.camera, fade, kf.fade, own);
     fade.uBlr.value = hasBlur ? Math.max(0, kf.bl || 0) * 0.01 : 0;
-    if (zRef.current) zRef.current.rotation.z = damp(zRef.current.rotation.z, ((kf.rz || 0) * Math.PI) / 180, 4, delta);
+    if (zRef.current) zRef.current.rotation.z = damp(zRef.current.rotation.z, ((kf.rz || 0) * Math.PI) / 180 + fl.rz, 4, delta);
   });
   return { groupRef, fade, hasFade, live, zRef };
 }
@@ -3207,7 +3226,7 @@ function SceneObjectText({ data }) {
   });
   const effId = TEXT_EFFECTS[data.textEffect] || 0;
   const wantTA = effId > 0 || data.keyframes.some((k) => k.tk || k.lh);
-  const { groupRef, fade, hasFade, live, zRef } = useObjectTransformRef(data.keyframes, data.billboard, effId > 0);
+  const { groupRef, fade, hasFade, live, zRef } = useObjectTransformRef(data.keyframes, data.billboard, effId > 0, data);
   const ta = useMemo(() => makeTextAnimUniforms(), []);
   const info = texture ? texture.userData.glyphs : null;
   const geo = useMemo(() => (wantTA && info ? buildTextGlyphGeometry(info) : null), [wantTA, info]);
@@ -3613,7 +3632,7 @@ function useClonedScene(src) {
 function SceneObjectModel({ data }) {
   const { scene: srcScene } = useGLTF(data.url);
   const scene = useClonedScene(srcScene);
-  const { groupRef, fade, hasFade } = useObjectTransformRef(data.keyframes, false);
+  const { groupRef, fade, hasFade } = useObjectTransformRef(data.keyframes, false, false, data);
   useEffect(() => {
     scene.traverse((child) => {
       if (child.isMesh) {
@@ -3852,14 +3871,14 @@ function SvgExtrudeBody({ url, data, fade, hasFade, shadows }) {
   );
 }
 function SceneObjectSvgExtrude({ data }) {
-  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard, false, data);
   const body = <group ref={zRef}><SvgExtrudeBody url={data.url} data={data} fade={fade} hasFade={hasFade} shadows={data.shadows !== false} /></group>;
   return <group ref={groupRef}>{data.billboard ? <Billboard>{body}</Billboard> : body}</group>;
 }
 function SceneObjectImageRaster({ data }) {
   const texture = useTexture(data.url);
   const aspect = texture.image ? texture.image.width / texture.image.height : 1;
-  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard, false, data);
   const sd = useAlphaDepth(texture, !!data.shCast);
   const mesh = (
     <group ref={zRef}><mesh renderOrder={10} scale={[aspect, 1, 1]} castShadow={!!sd} customDepthMaterial={sd ? sd.depth : undefined} customDistanceMaterial={sd ? sd.dist : undefined}>
@@ -3875,7 +3894,7 @@ function SceneObjectImageRaster({ data }) {
 }
 function SceneObjectImageSvg({ data }) {
   const texture = useHiResSvgTexture(data.url, 3072);
-  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard, false, data);
   const sd = useAlphaDepth(texture, !!data.shCast);
   if (!texture) return <group ref={groupRef} />;
   const aspect = texture.image.width / texture.image.height;
@@ -3894,7 +3913,7 @@ function SceneObjectImageSvg({ data }) {
 function SceneObjectVideo({ data }) {
   const scrub = data.videoMode !== "play";
   const { texture, aspect, video } = useVideoTexture(data.url, data.loop, scrub);
-  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard);
+  const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard, false, data);
   useFrame(() => {
     if (!scrub || !video) return;
     seekVideoToProgress(video, useScrollStore.getState().smoothProgress, data.scrollFrom ?? 0, data.scrollTo ?? 1);
@@ -4150,7 +4169,7 @@ function driveSmoke(mat, mesh, o, sm, camera, delta, st, liveQ) {
   return U.uDens.value;
 }
 function SceneObjectSmoke({ data }) {
-  const { groupRef, live } = useObjectTransformRef(data.keyframes, false);
+  const { groupRef, live } = useObjectTransformRef(data.keyframes, false, false, data);
   const { camera } = useThree();
   const perf = React.useContext(PerfCtx);
   const mat = useMemo(() => makeSmokeMaterial(), []);
@@ -4172,7 +4191,7 @@ function SceneObjectSmoke({ data }) {
   );
 }
 function SceneObjectShape({ data }) {
-  const { groupRef, fade, live } = useObjectTransformRef(data.keyframes, data.billboard);
+  const { groupRef, fade, live } = useObjectTransformRef(data.keyframes, data.billboard, false, data);
   const mat = useMemo(() => makeShapeMaterial(fade), [fade]);
   const meshRef = useRef(null);
   const physRef = useRef(null);
@@ -6352,6 +6371,8 @@ const FADE_SOFT = 1.0;
 //@@use FADE_FRAG_DECL
 //@@use FADE_FRAG_BODY
 //@@use discardClearPixels
+//@@use _FLO
+//@@use floatOffset
 //@@use patchFadeMaterial
 //@@use weebProgKey
 //@@use patchMediaMaterial
@@ -6887,7 +6908,19 @@ function ObjectPreview({ obj }) {
   else if (obj.type === "shape") inner = <ObjectPreviewShape obj={obj} fade={fade} />;
   else if (obj.type === "video") inner = <ObjectPreviewVideo obj={obj} fade={fade} />;
   else inner = obj.type === "image" ? <ObjectPreviewImage obj={obj} fade={fade} /> : <ObjectPreviewModel obj={obj} fade={fade} />;
-  return <FadeGroup obj={obj} fade={fade}>{inner}</FadeGroup>;
+  return <FadeGroup obj={obj} fade={fade}>{obj.float > 0 && obj.type !== "shape" ? <FloatWrap obj={obj}>{inner}</FloatWrap> : inner}</FadeGroup>;
+}
+/* "Flotar siempre" en el visor: se mece alrededor de su propio centro (y en el MP4 usa el tiempo del video). */
+function FloatWrap({ obj, children }) {
+  const outer = useRef(null);
+  const P = obj.position || [0, 0, 0];
+  useFrame((state) => {
+    const g = outer.current; if (!g) return;
+    const fl = floatOffset(obj, state.clock.elapsedTime);
+    g.position.set(P[0], P[1] + fl.dy, P[2]);
+    g.rotation.set(0, fl.ry, fl.rz);
+  });
+  return <group ref={outer} position={P}><group position={[-P[0], -P[1], -P[2]]}>{children}</group></group>;
 }
 
 /* Grilla tipo Blender: shader propio con líneas antialiasadas (fwidth), sin parpadeo.
@@ -7882,6 +7915,8 @@ function generateObjectsCode(objects, transformsByKf, stages, easings) {
     litBase: ${fmtNum(o.litBase ?? 0.2)},
     shCast: ${o.shCast ? "true" : "false"},
     billboard: ${o.billboard ? "true" : "false"},
+    float: ${fmtNum(o.float || 0)},
+    floatSpeed: ${fmtNum(o.floatSpeed || 1)},
     keyframes: [
 ${kfLines}
     ],
@@ -7897,6 +7932,8 @@ ${kfLines}
     smokeAmb: ${F("smokeAmb", 0.5)}, smokeSun: ${F("smokeSun", 0.8)}, smokeSunAz: ${F("smokeSunAz", 35)}, smokeSunEl: ${F("smokeSunEl", 55)},
     smokeLMix: ${F("smokeLMix", 1)}, smokeG: ${F("smokeG", 0.35)}, smokeShadow: ${F("smokeShadow", 1.5)}, smokeQuality: ${F("smokeQuality", 2)},
     billboard: false,
+    float: ${fmtNum(o.float || 0)},
+    floatSpeed: ${fmtNum(o.floatSpeed || 1)},
     keyframes: [
 ${kfLines}
     ],
@@ -7914,6 +7951,8 @@ ${kfLines}
     lightDecay: ${fmtNum(o.lightDecay ?? 2)},
     lightShadow: ${o.lightShadow ? "true" : "false"},
     billboard: false,
+    float: ${fmtNum(o.float || 0)},
+    floatSpeed: ${fmtNum(o.floatSpeed || 1)},
     keyframes: [
 ${kfLines}
     ],
@@ -7937,6 +7976,8 @@ ${kfLines}
     litBase: ${fmtNum(o.litBase ?? 0.2)},
     shCast: ${o.shCast ? "true" : "false"},
     billboard: ${o.billboard ? "true" : "false"},
+    float: ${fmtNum(o.float || 0)},
+    floatSpeed: ${fmtNum(o.floatSpeed || 1)},
     keyframes: [
 ${kfLines}
     ],
@@ -7970,6 +8011,8 @@ ${kfLines}
     mat: ${JSON.stringify(o.mat || "plastic")},
     matColor: ${JSON.stringify(o.matColor || "")},
     matRough: ${o.matRough != null ? fmtNum(o.matRough) : "null"},
+    float: ${fmtNum(o.float || 0)},
+    floatSpeed: ${fmtNum(o.floatSpeed || 1)},
     keyframes: [
 ${kfLines}
     ],
@@ -10204,6 +10247,8 @@ function App() {
         )}
         {isModel && <Switch checked={o.shadows !== false} onChange={(v) => updateObject(o.id, { shadows: v })} label="Sombras (proyecta / recibe)" />}
         {!isModel && <Switch checked={!!o.billboard} onChange={(v) => updateObject(o.id, { billboard: v })} label="Billboard (mira a cámara)" />}
+        <Slider label="Flotar siempre (altura · 0 = no)" min={0} max={0.6} step={0.01} value={o.float || 0} onChange={(v) => updateObject(o.id, { float: v })} />
+        {(o.float || 0) > 0 && <Slider label="Ritmo de la flotación" min={0.2} max={3} step={0.05} value={o.floatSpeed ?? 1} onChange={(v) => updateObject(o.id, { floatSpeed: v })} />}
         {(isText || isImage || (isShape && !o.phys)) && <Switch checked={!!o.lit} onChange={(v) => updateObject(o.id, { lit: v })} label="Recibe luz (spots y luces de la escena)" />}
         {(isText || isImage || (isShape && !o.phys)) && o.lit && <Slider label="Brillo propio" min={0} max={1} step={0.01} value={o.litBase ?? 0.2} onChange={(v) => updateObject(o.id, { litBase: v })} />}
         {(isText || isImage || (isShape && !o.phys)) && o.lit && <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>Con esto el cartel se ve según la luz que le llega: oscuro donde no hay luz y brillante bajo los spots. «Brillo propio» es lo mínimo que se ve sin luz.</div>}
