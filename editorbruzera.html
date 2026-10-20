@@ -8259,6 +8259,20 @@ function buildFullHtml(boneCode, scenesCode, movementCode, scrollLengthCode, obj
     tpl = swap(tpl, mk("SEO_BODY_START"), mk("SEO_BODY_END"), seoPack.body);
     tpl = tpl.replace('<html lang="es">', '<html lang="' + seoEsc(seoPack.lang) + '">');
   }
+  /* Pre-cargador: el "000" solo si el loader lo muestra. */
+  if (/"showNumber":\s*false/.test(loaderCode)) tpl = tpl.replace('<div id="pre-ldr"><span>000</span></div>', '<div id="pre-ldr"></div>');
+  /* El sitio sale ya compilado: el visitante no espera a que Babel traduzca todo el código en su navegador
+     (en un celular eran varios segundos de loader). Si algo fallara, queda la versión de siempre. */
+  try {
+    const open = '<script type="text/babel" data-type="module" data-presets="react">';
+    const i0 = tpl.indexOf(open), i1 = i0 >= 0 ? tpl.indexOf("</" + "script>", i0) : -1;
+    if (i0 >= 0 && i1 > i0 && typeof Babel !== "undefined") {
+      let out = Babel.transform(tpl.slice(i0 + open.length, i1), { presets: ["react"], sourceType: "module", compact: true, comments: false }).code;
+      out = out.replace(/<\/(script)/gi, "<\\/$1");
+      tpl = tpl.slice(0, i0) + '<script type="module">\n' + out + "\n" + tpl.slice(i1);
+      tpl = tpl.replace(/<script src="https:\/\/unpkg\.com\/@babel\/standalone@[^"]+"><\/script>\n?/, "");
+    }
+  } catch (e) { console.warn("No se pudo precompilar el sitio; se exporta como siempre.", e); }
   return tpl;
 }
 
