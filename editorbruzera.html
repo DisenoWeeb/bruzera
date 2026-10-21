@@ -9197,6 +9197,7 @@ function App() {
   const [autoRotate, setAutoRotate] = useState(false);
   const [foundMap, setFoundMap] = useState({});
   const [copiedWhich, setCopiedWhich] = useState(null);
+  const [projectName, setProjectName] = useState("proyecto");   // nombre del proyecto: nombra los archivos que se guardan
   const [downloaded, setDownloaded] = useState(false);
 
   // Objetos de entorno (antes "Entorno" / un solo universo.glb). Ahora
@@ -9706,6 +9707,7 @@ function App() {
     kind: "weeb-scroll-project",
     version: 1,
     savedAt: new Date().toISOString(),
+    projectName,
     modelUrl,
     charScale,
     charCenterY,
@@ -9732,6 +9734,7 @@ function App() {
 
   const restoreProjectState = (p) => {
     if (!p || p.kind !== "weeb-scroll-project") throw new Error("no es un archivo de proyecto de esta herramienta");
+    if (typeof p.projectName === "string" && p.projectName.trim()) setProjectName(p.projectName);
     setModelUrl(p.modelUrl || DEFAULT_MODEL_URL);
     setCharScale(typeof p.charScale === "number" ? p.charScale : 1);
     setCharCenterY(typeof p.charCenterY === "number" ? p.charCenterY : 0);
@@ -9796,7 +9799,7 @@ function App() {
     const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "proyecto.json";
+    a.href = url; a.download = `${(projectName || "proyecto").trim().replace(/[^a-zA-Z0-9._-]+/g, "_") || "proyecto"}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -9809,7 +9812,9 @@ function App() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        restoreProjectState(JSON.parse(reader.result));
+        const parsed = JSON.parse(reader.result);
+        restoreProjectState(parsed);
+        if (!(typeof parsed.projectName === "string" && parsed.projectName.trim()) && file.name) setProjectName(file.name.replace(/\.json$/i, "").replace(/ \(\d+\)$/, ""));
         setProjectLoaded(true);
         setTimeout(() => setProjectLoaded(false), 2500);
       } catch (e) {
@@ -9825,8 +9830,7 @@ function App() {
      original) con tu progreso actual metido adentro en base64. Al
      abrir ese archivo de nuevo — doble clic, o subido a GitHub Pages
      con el nombre que quieras — arranca ya con todo cargado. */
-  const [projectName, setProjectName] = useState("proyecto");
-  const saveProjectAsEditor = () => {
+  const buildEditorHtml = () => {
     const project = buildProjectSnapshot();
     const json = JSON.stringify(project);
     const b64 = btoa(unescape(encodeURIComponent(json)));
@@ -9838,6 +9842,10 @@ function App() {
       /<script[^>]*id="embedded-project-b64"[^>]*>[\s\S]*?<\/script>/,
       `<script id="embedded-project-b64" type="text/plain">${b64}</scri` + `pt>`
     );
+    return html;
+  };
+  const saveProjectAsEditor = () => {
+    const html = buildEditorHtml();
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -9847,6 +9855,23 @@ function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+  /* Copia el editor (con el proyecto adentro) al portapapeles, para pegarlo directo en el archivo del repo de GitHub del proyecto. */
+  const copyEditorHtml = async () => {
+    const html = buildEditorHtml();
+    let ok = false;
+    try { await navigator.clipboard.writeText(html); ok = true; }
+    catch (e) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = html; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e2) { ok = false; }
+    }
+    if (ok) { setCopiedWhich("editor"); setTimeout(() => setCopiedWhich(null), 2200); }
+    else window.alert("El navegador no dejó copiar al portapapeles. Usá «Editor .html» para descargarlo.");
   };
 
   const startVideoExport = async () => {
@@ -10014,7 +10039,7 @@ function App() {
     .map((o) => ({ o, i: renderObjects.indexOf(o) }))
     .filter(({ o }) => labelMode === "all" || (labelMode === "visible" && !o.hidden && o.visible) || (selObj && o.id === selObj.id))
     .map(({ o, i }) => ({ id: o.id, label: o.label, color: colorOf(o, i), position: o.position, visible: o.visible, hidden: !!o.hidden }));
-  const toast = projectLoaded ? "Proyecto cargado" : downloaded ? "index.html descargado" : copiedWhich ? "Copiado" : null;
+  const toast = projectLoaded ? "Proyecto cargado" : downloaded ? "index.html descargado" : copiedWhich === "editor" ? "Editor copiado: pegalo en el archivo del repo" : copiedWhich ? "Copiado" : null;
   const fileName = (projectName || "proyecto").trim().replace(/[^a-zA-Z0-9._-]+/g, "_") || "proyecto";
 
   useEffect(() => {
@@ -10912,7 +10937,9 @@ function App() {
                     </label>
                     <Btn icon="file" onClick={saveProject}>Guardar .json</Btn>
                     <Btn icon="file" onClick={saveProjectAsEditor}>Editor .html</Btn>
+                    <Btn icon="copy" onClick={copyEditorHtml}>Copiar editor .html</Btn>
                   </div>
+                  <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.35 }}>«Editor .html» descarga (o «Copiar editor» copia) esta misma herramienta con tu proyecto adentro: pegalo en el archivo del repo de GitHub del proyecto y al abrirlo arranca con todo cargado, sin necesidad del .json. El nombre del proyecto nombra los archivos.</div>
                   <div className="tools"><Btn icon="trash" kind="danger" onClick={newProject}>Nuevo proyecto (vaciar)</Btn></div>
                   {projectLoadError && <div className="err">{projectLoadError}</div>}
                 </Group>
