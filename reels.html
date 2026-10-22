@@ -3913,8 +3913,21 @@ function SceneObjectVideo({ data }) {
   const { texture, aspect, video } = useVideoTexture(data.url, data.loop, scrub);
   const { groupRef, fade, hasFade, zRef } = useObjectTransformRef(data.keyframes, data.billboard, false, data);
   useFrame(() =&gt; {
-    if (!scrub || !video) return;
-    seekVideoToProgress(video, useScrollStore.getState().smoothProgress, data.scrollFrom ?? 0, data.scrollTo ?? 1);
+    if (!video) return;
+    if (scrub) { seekVideoToProgress(video, useScrollStore.getState().smoothProgress, data.scrollFrom ?? 0, data.scrollTo ?? 1); return; }
+    /* Exportando MP4: el video NO corre solo (el render va más lento o más rápido que el tiempo real).
+       Se lo pausa y se lo lleva al instante exacto de cada cuadro: tiempo de exportación, con loop si corresponde. */
+    const ext = typeof window !== "undefined" ? window.__wsExportTime : null;
+    if (ext != null) {
+      if (!video.paused) { video.pause(); video.__wsExpPaused = true; }
+      const d = video.duration;
+      if (!isFinite(d) || d &lt;= 0) return;
+      const tt = data.loop !== false ? ext % d : Math.min(ext, Math.max(0, d - 0.001));
+      if (!video.seeking &amp;&amp; Math.abs(video.currentTime - tt) &gt; 0.001) video.currentTime = tt;
+    } else if (video.__wsExpPaused) {
+      video.__wsExpPaused = false;
+      const pr = video.play(); if (pr &amp;&amp; pr.catch) pr.catch(() =&gt; {});
+    }
   });
   if (!texture) return &lt;group ref={groupRef} /&gt;;
   const mesh = (
