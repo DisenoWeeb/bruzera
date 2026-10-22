@@ -9863,13 +9863,28 @@ function App() {
     const b = vidBridge.current;
     let encoder = null;
     let started = false;
+    /* El video se va grabando directo al disco (Chrome/Edge): antes se juntaba entero en la memoria y al final
+       se copiaba 2-3 veces para armar el archivo; en videos largos la pestaña se quedaba sin memoria ("¡Oh, no!"). */
+    const fileName = "reel-" + fmt.file + "-" + w + "x" + h + ".mp4";
+    let writable = null;
+    if (typeof window.showSaveFilePicker === "function") {
+      try {
+        const fh = await window.showSaveFilePicker({ suggestedName: fileName, types: [{ description: "Video MP4", accept: { "video/mp4": [".mp4"] } }] });
+        writable = await fh.createWritable();
+      } catch (e) {
+        if (e && e.name === "AbortError") return;   // cerró el cuadro de guardar: no exporta
+        writable = null;                             // sin permiso: sigue con el método en memoria
+      }
+    }
     vidCancelRef.current = false;
     setIsPlaying(false);
     setVidRun({ status: "running", pct: 0, msg: "Preparando..." });
     try {
       const cfg = await pickH264Config(w, h, fps, bitrate);
       const mod = await loadMp4Muxer();
-      const muxer = new mod.Muxer({ target: new mod.ArrayBufferTarget(), video: { codec: "avc", width: w, height: h, frameRate: fps }, fastStart: "in-memory" });
+      const muxer = writable
+        ? new mod.Muxer({ target: new mod.FileSystemWritableFileStreamTarget(writable), video: { codec: "avc", width: w, height: h, frameRate: fps }, fastStart: false })
+        : new mod.Muxer({ target: new mod.ArrayBufferTarget(), video: { codec: "avc", width: w, height: h, frameRate: fps }, fastStart: false });
       let encErr = null;
       encoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => { encErr = e; } });
       encoder.configure(cfg);
@@ -9928,19 +9943,31 @@ function App() {
       }
       await encoder.flush();
       if (encErr) throw encErr;
+      setVidRun({ status: "running", pct: 1, msg: "Cerrando el archivo..." });
       muxer.finalize();
-      const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = "reel-" + fmt.file + "-" + w + "x" + h + ".mp4";
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      setVidRun({ status: "done", pct: 1, msg: "reel-" + fmt.file + ".mp4 - " + (blob.size / 1048576).toFixed(1) + " MB - " + (total / fps).toFixed(1) + " s" });
+      let sizeMb;
+      if (writable) {
+        await writable.close();
+        writable = null;
+        sizeMb = "";
+      } else {
+        let buf = muxer.target.buffer;
+        const blob = new Blob([buf], { type: "video/mp4" });
+        buf = null;
+        sizeMb = " - " + (blob.size / 1048576).toFixed(1) + " MB";
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      }
+      setVidRun({ status: "done", pct: 1, msg: fileName + sizeMb + " - " + (total / fps).toFixed(1) + " s - guardado" });
     } catch (e) {
       if (e && e.message === "__cancel__") setVidRun(null);
       else setVidRun({ status: "error", pct: 0, msg: (e && e.message) || String(e) });
     } finally {
       try { if (encoder && encoder.state !== "closed") encoder.close(); } catch (e2) { /* ya cerrado */ }
+      if (writable) { try { await writable.abort(); } catch (e3) { /* nada */ } }   // si falló o se canceló: no deja un archivo roto
       window.__wsExportTime = null;
       if (started) { setExportT(null); setVidBox(null); }
     }
