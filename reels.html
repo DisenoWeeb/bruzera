@@ -6821,8 +6821,20 @@ function ObjectPreviewVideo({ obj, fade }) {
   const scrub = obj.videoMode !== "play";
   const { texture, aspect, video } = useVideoTexture(obj.previewUrl || obj.url, obj.loop, scrub);
   useFrame(() => {
-    if (!scrub || !video) return;
-    seekVideoToProgress(video, obj.scrollProgress || 0, (obj.scrubFrom ?? 0) / 100, (obj.scrubTo ?? 100) / 100);
+    if (!video) return;
+    if (scrub) { seekVideoToProgress(video, obj.scrollProgress || 0, (obj.scrubFrom ?? 0) / 100, (obj.scrubTo ?? 100) / 100); return; }
+    /* Exportando MP4: el video no corre solo; se lo lleva al instante exacto de cada cuadro (con loop si corresponde). */
+    const ext = typeof window !== "undefined" ? window.__wsExportTime : null;
+    if (ext != null) {
+      if (!video.paused) { video.pause(); video.__wsExpPaused = true; }
+      const d = video.duration;
+      if (!isFinite(d) || d <= 0) return;
+      const tt = obj.loop !== false ? ext % d : Math.min(ext, Math.max(0, d - 0.001));
+      if (!video.seeking && Math.abs(video.currentTime - tt) > 0.001) video.currentTime = tt;
+    } else if (video.__wsExpPaused) {
+      video.__wsExpPaused = false;
+      const pr = video.play(); if (pr && pr.catch) pr.catch(() => {});
+    }
   });
   if (!texture) return null;
   const mesh = (
