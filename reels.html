@@ -6672,6 +6672,7 @@ function useVideoTexture(url, loop, scrub) {
     const onReady = () => {
       if (cancelled || tex) return;
       tex = new THREE.VideoTexture(video);
+      video.__wsTex = tex;
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
@@ -6706,11 +6707,71 @@ function useVideoTexture(url, loop, scrub) {
    "p" (0..1), dentro del tramo [from, to] del scroll. Antes de "from"
    queda en el primer frame; después de "to", en el último. No encola
    saltos: si todavía está buscando un frame, espera al siguiente tick. */
+/* Exportación MP4: buscar (seek) un cuadro por cada cuadro del MP4 es lentísimo (el navegador decodifica desde el
+   último keyframe cada vez). Por eso, antes de exportar, se reproduce cada video UNA vez y se guardan sus cuadros
+   (reducidos); durante la exportación se usa el cuadro guardado más cercano al tiempo pedido. */
+async function vxPrepareFrames(v, onProg) {
+  try {
+    if (!v || !v.__wsTex || !("requestVideoFrameCallback" in v) || typeof createImageBitmap === "undefined") return false;
+    const d = v.duration, vw = v.videoWidth, vh = v.videoHeight;
+    if (!isFinite(d) || d <= 0 || !vw || !vh) return false;
+    const maxFrames = Math.ceil(d * 60);
+    const sc = Math.min(1, 1280 / Math.max(vw, vh), Math.sqrt(500e6 / (maxFrames * vw * vh * 4)));
+    const rw = Math.max(2, Math.round(vw * sc)), rh = Math.max(2, Math.round(vh * sc));
+    const wasLoop = v.loop;
+    v.__wsPrep = true;
+    v.loop = false; v.pause();
+    if (v.currentTime !== 0) await new Promise((res) => { const f = () => { v.removeEventListener("seeked", f); res(); }; v.addEventListener("seeked", f); v.currentTime = 0; });
+    const frames = [], times = [];
+    let running = true;
+    const rate = d <= 20 ? 0.5 : 1;
+    const onFrame = async (now, meta) => {
+      if (!running) return;
+      const mt = meta && typeof meta.mediaTime === "number" ? meta.mediaTime : v.currentTime;
+      try { frames.push(await createImageBitmap(v, { resizeWidth: rw, resizeHeight: rh, resizeQuality: "medium" })); times.push(mt); } catch (e) { /* cuadro perdido */ }
+      if (onProg) onProg(Math.min(1, mt / d));
+      if (running) v.requestVideoFrameCallback(onFrame);
+    };
+    await new Promise((res) => {
+      const done = () => { running = false; v.removeEventListener("ended", done); clearTimeout(to); res(); };
+      const to = setTimeout(done, (d / rate + 8) * 1000);
+      v.addEventListener("ended", done);
+      v.playbackRate = rate;
+      v.requestVideoFrameCallback(onFrame);
+      const pr = v.play(); if (pr && pr.catch) pr.catch(() => {});
+    });
+    v.pause(); v.playbackRate = 1; v.loop = wasLoop; v.__wsPrep = false;
+    if (frames.length < 2) { frames.forEach((b) => { try { b.close(); } catch (e) {} }); return false; }
+    v.__wsFrames = { frames, times }; v.__wsIdx = -1;
+    return true;
+  } catch (e) { if (v) v.__wsPrep = false; return false; }
+}
+function vxShowFrame(v, t) {
+  const c = v && v.__wsFrames; if (!c || !v.__wsTex) return false;
+  const ts = c.times; let lo = 0, hi = ts.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (ts[m] < t) lo = m + 1; else hi = m; }
+  let k = lo; if (k > 0 && Math.abs(ts[k - 1] - t) <= Math.abs(ts[k] - t)) k = k - 1;
+  if (v.__wsIdx === k) return true;
+  v.__wsIdx = k;
+  const bmp = c.frames[k];
+  let cv = v.__wsCv;
+  if (!cv || cv.width !== bmp.width || cv.height !== bmp.height) { cv = v.__wsCv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height; v.__wsCx = cv.getContext("2d"); }
+  v.__wsCx.drawImage(bmp, 0, 0);
+  v.__wsTex.image = cv; v.__wsTex.needsUpdate = true;
+  return true;
+}
+function vxReleaseFrames(v) {
+  const c = v && v.__wsFrames;
+  if (c) c.frames.forEach((b) => { try { b.close(); } catch (e) {} });
+  if (v) { v.__wsFrames = null; v.__wsIdx = -1; if (v.__wsTex && v.__wsTex.image !== v) { v.__wsTex.image = v; v.__wsTex.needsUpdate = true; } }
+}
 function seekVideoToProgress(video, p, from, to) {
   if (!video || !isFinite(video.duration) || video.duration <= 0) return;
   const span = Math.max(0.0001, to - from);
   const k = Math.min(1, Math.max(0, (p - from) / span));
   const target = k * Math.max(0, video.duration - 0.05);
+  if (video.__wsPrep) return;
+  if (window.__wsExportTime != null && vxShowFrame(video, target)) return;
   if (!video.seeking && Math.abs(video.currentTime - target) > 0.02) video.currentTime = target;
 }
 
@@ -6821,7 +6882,7 @@ function ObjectPreviewVideo({ obj, fade }) {
   const scrub = obj.videoMode !== "play";
   const { texture, aspect, video } = useVideoTexture(obj.previewUrl || obj.url, obj.loop, scrub);
   useFrame(() => {
-    if (!video) return;
+    if (!video || video.__wsPrep) return;
     if (scrub) { seekVideoToProgress(video, obj.scrollProgress || 0, (obj.scrubFrom ?? 0) / 100, (obj.scrubTo ?? 100) / 100); return; }
     /* Exportando MP4: el video no corre solo; se lo lleva al instante exacto de cada cuadro (con loop si corresponde). */
     const ext = typeof window !== "undefined" ? window.__wsExportTime : null;
@@ -6830,6 +6891,7 @@ function ObjectPreviewVideo({ obj, fade }) {
       const d = video.duration;
       if (!isFinite(d) || d <= 0) return;
       const tt = obj.loop !== false ? ext % d : Math.min(ext, Math.max(0, d - 0.001));
+      if (vxShowFrame(video, tt)) return;
       if (!video.seeking && Math.abs(video.currentTime - tt) > 0.001) video.currentTime = tt;
     } else if (video.__wsExpPaused) {
       video.__wsExpPaused = false;
@@ -9941,6 +10003,14 @@ function App() {
       if (!sized) throw new Error("El visor no pudo ajustarse a " + rw * ss + "x" + rh * ss + ". Proba calidad Normal.");
       await vxFrames(8);
 
+      const vids0 = window.__wsVideos ? Array.from(window.__wsVideos) : [];
+      for (let vi = 0; vi < vids0.length; vi++) {
+        setVidRun({ status: "running", pct: 0, msg: "Preparando video " + (vi + 1) + " / " + vids0.length + " (una sola vez, deja esta pestana visible)..." });
+        await vxPrepareFrames(vids0[vi], (pp) => setVidRun({ status: "running", pct: 0, msg: "Preparando video " + (vi + 1) + " / " + vids0.length + ": " + Math.round(pp * 100) + "%" }));
+        if (vidCancelRef.current) throw new Error("__cancel__");
+      }
+      window.__wsExportTime = 0;
+      await vxFrames(2);
       const tStart = performance.now();
       for (let i = 0; i < total; i++) {
         if (vidCancelRef.current) throw new Error("__cancel__");
@@ -9988,6 +10058,7 @@ function App() {
     } finally {
       try { if (encoder && encoder.state !== "closed") encoder.close(); } catch (e2) { /* ya cerrado */ }
       window.__wsExportTime = null;
+      try { (window.__wsVideos ? Array.from(window.__wsVideos) : []).forEach(vxReleaseFrames); } catch (e3) { /* sin videos */ }
       if (started) { setExportT(null); setVidBox(null); }
     }
   };
