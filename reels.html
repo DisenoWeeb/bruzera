@@ -9941,6 +9941,7 @@ function App() {
       if (!sized) throw new Error("El visor no pudo ajustarse a " + rw * ss + "x" + rh * ss + ". Proba calidad Normal.");
       await vxFrames(8);
 
+      const tStart = performance.now();
       for (let i = 0; i < total; i++) {
         if (vidCancelRef.current) throw new Error("__cancel__");
         if (encErr) throw encErr;
@@ -9952,9 +9953,9 @@ function App() {
           const ok = await vxUntil(() => b.tag === t && b.frames > f0);
           if (!ok) throw new Error("El visor dejo de responder (pestana en segundo plano?).");
         }
-        await vxFrames(i === 0 ? 4 : 2);
+        await vxFrames(i === 0 ? 4 : 1);
         const vids = window.__wsVideos ? Array.from(window.__wsVideos) : [];
-        if (vids.length) { await vxUntil(() => vids.every((v) => !v.seeking), 120); await vxFrames(2); }
+        if (vids.length) { await vxUntil(() => vids.every((v) => !v.seeking), 120); await vxFrames(1); }
 
         const bg = sampleFx(fxByKf, t, stagesComputed, easings).background;
         paintVideoBackground(ctx, rw, rh, bg);
@@ -9969,7 +9970,7 @@ function App() {
         while (encoder.encodeQueueSize > 6) await new Promise((r) => setTimeout(r, 4));
 
         if (pctx) pctx.drawImage(out, 0, 0, pv.width, pv.height);
-        if (i % 3 === 0 || i === total - 1) setVidRun({ status: "running", pct: (i + 1) / total, msg: "Cuadro " + (i + 1) + " / " + total + " - deja esta pestana visible" });
+        if (i % 3 === 0 || i === total - 1) setVidRun({ status: "running", pct: (i + 1) / total, msg: "Cuadro " + (i + 1) + " / " + total + " - faltan ~" + (() => { const el = (performance.now() - tStart) / 1000; const rem = Math.max(0, Math.round(el / (i + 1) * (total - i - 1))); return Math.floor(rem / 60) + ":" + String(rem % 60).padStart(2, "0"); })() + " min - deja esta pestana visible" });
       }
       await encoder.flush();
       if (encErr) throw encErr;
