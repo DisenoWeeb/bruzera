@@ -858,6 +858,7 @@ const SCROLL_MAX_PPS = 1.5;
 const SCROLL_SPEED_MOBILE = 0;
 const TOUCH_INERTIA = 6;
 const MOBILE_SNAP = false;
+const CAM_NEAR_CFG = 0.1;
 /*@GEN:POSTFX_END*/
 
 /*@GEN:REFLECTION_START*/
@@ -4262,8 +4263,8 @@ const IS_MOBILE_VIEW = typeof window !== "undefined" && window.matchMedia && win
    Arranca en 1 en celular y en 2 en escritorio; si los cuadros por segundo caen, baja de a un nivel (nunca vuelve a subir, para no parpadear). */
 const PerfCtx = React.createContext({ tier: 2, safe: 0, off: {} });
 /* ?off=ref,bloom,ao,beam,part,contact,dpr  -> apaga SOLO esos efectos (para medir cuál pesa más en un celular). Sin eso no cambia nada. */
-/* near más alto = mucha más precisión de profundidad a distancia (evita parpadeos/manchas por z-fighting en bordes finos). ?near=0.1 vuelve al valor anterior. */
-const CAM_NEAR = (() => { try { const v = parseFloat(new URLSearchParams(window.location.search).get("near")); if (v > 0 && v < 5) return v; } catch (e) {} return 0.5; })();
+/* near más alto = más precisión de profundidad a distancia (menos parpadeos), pero la cámara "atraviesa" lo que está muy cerca. Se regula en el editor (Plano cercano); ?near=0.5 lo fuerza para probar. */
+const CAM_NEAR = (() => { try { const v = parseFloat(new URLSearchParams(window.location.search).get("near")); if (v > 0 && v < 5) return v; } catch (e) {} return CAM_NEAR_CFG; })();
 const AA_MODE = (() => { try { const v = new URLSearchParams(window.location.search).get("aa"); if (v === "msaa" || v === "smaa" || v === "both" || v === "off") return v; } catch (e) {} return IS_MOBILE_VIEW ? "smaa" : "msaa"; })();
 const OFF_FLAGS = (() => { try { const v = new URLSearchParams(window.location.search).get("off") || ""; const o = {}; v.split(",").forEach((k) => { if (k.trim()) o[k.trim()] = true; }); return o; } catch (e) { return {}; } })();
 /* Guardia de "pantalla negra": en algunas GPU de celular un efecto (oclusión ambiental, MSAA con postproceso, etc.) deja TODO lo 3D negro.
@@ -7574,7 +7575,7 @@ const SCROLL_SPEED = ${postFx.scrollSpeed ?? 0};
 const SCROLL_MAX_PPS = ${postFx.scrollMaxPps ?? 1.5};
 const SCROLL_SPEED_MOBILE = ${postFx.scrollSpeedMobile ?? 0};
 const TOUCH_INERTIA = ${postFx.touchInertia ?? 6};
-const MOBILE_SNAP = ${postFx.mobileSnap ? "true" : "false"};`;
+const MOBILE_SNAP = ${postFx.mobileSnap ? "true" : "false"};\nconst CAM_NEAR_CFG = ${Math.min(2, Math.max(0.01, +postFx.camNear || 0.1))};`;
 }
 
 /* Genera el bloque de configuración de la estela de brillo, con el
@@ -8903,6 +8904,11 @@ function paintVideoVignette(ctx, w, h, offset, darkness) {
   ctx.restore();
 }
 /* Vive dentro del <Canvas> del visor: avisa que "t" ya se dibujo y entrega el elemento canvas. */
+function CamNearSync({ near }) {
+  const camera = useThree((st) => st.camera);
+  useEffect(() => { if (camera && camera.near !== near) { camera.near = near; camera.updateProjectionMatrix(); } }, [camera, near]);
+  return null;
+}
 function VideoExportBridge({ tag, bridgeRef }) {
   const { gl } = useThree();
   useFrame(() => {
@@ -10506,9 +10512,10 @@ function App() {
           )}
         </div>
         <div className="scene-box" style={vidBox ? { position: "fixed", inset: "auto", left: 0, top: 0, width: vidBox.w, height: vidBox.h } : (section === "pages" ? { visibility: "hidden" } : undefined)}>
-        <Canvas key={canvasKey} onCreated={onCanvasCreated} shadows="soft" camera={{ position: [0, 0.3, 3.5], fov: 35 }} dpr={exporting ? 1 : [1, 1.5]} gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}>
+        <Canvas key={canvasKey} onCreated={onCanvasCreated} shadows="soft" camera={{ position: [0, 0.3, 3.5], fov: 35, near: Math.min(2, Math.max(0.01, +postFx.camNear || 0.1)) }} dpr={exporting ? 1 : [1, 1.5]} gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}>
           <Scene pose={currentPose} onBonesFound={setFoundMap} cameraTarget={currentCamTarget} sceneCameraActive={sceneCameraActive} autoRotate={!exporting && autoRotate} movement={currentMovement} objects={exporting ? renderObjects : viewObjects} showObjects={exporting || showObjects} showGrid={!exporting && showGrid} fx={renderFx} showFx={exporting || showFx} orbitRef={orbitRef} liveCameraRef={liveCameraRef} modelUrl={modelUrl} postFx={postFx} charScale={charScale} charCenterY={charCenterY} charAnchorRef={charAnchorRef} trail={trail} reflection={reflection}
             markers={!exporting && section === "objects" && showObjects && labelMode !== "none" ? markers : (!exporting && section === "objects" && showObjects && selObj ? markers.filter((m) => m.id === selObj.id) : null)} selectedObjectId={selectedObj} onSelectObject={setSelectedObj} />
+          <CamNearSync near={Math.min(2, Math.max(0.01, +postFx.camNear || 0.1))} />
           <VideoExportBridge tag={exportT} bridgeRef={vidBridge} />
         </Canvas>
         </div>
@@ -10835,6 +10842,8 @@ function App() {
                 <Group id="lookmaster" title="Luz y exposición">
                   <Slider label="Luz natural" min={0} max={1} step={0.01} value={postFx.naturalLight ?? 0} onChange={(v) => setPostFxField("naturalLight", v)} />
                   <Slider label="Exposición" min={0.5} max={2} step={0.01} value={postFx.exposure ?? 1} onChange={(v) => setPostFxField("exposure", v)} />
+                  <Slider label="Plano cercano de la cámara" min={0.02} max={1} step={0.01} value={postFx.camNear ?? 0.1} onChange={(v) => setPostFxField("camNear", v)} />
+                  <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.4 }}>Si la cámara "atraviesa" paredes o objetos cercanos, bajalo (0.05–0.1). Si ves parpadeos en bordes lejanos, subilo. Vale igual en el editor y en el sitio exportado.</div>
                   <div style={{ fontSize: 10.5, opacity: 0.65, lineHeight: 1.4 }}>Luz natural: relleno suave y cálido desde arriba que aclara las sombras (no cambia el fondo ni el neón). Exposición: multiplica todas las luces a la vez. Salen igual en el index.html y en el MP4.</div>
                 </Group>
                 {lookMode === "manual" && (
