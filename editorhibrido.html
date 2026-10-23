@@ -859,6 +859,7 @@ const SCROLL_SPEED_MOBILE = 0;
 const TOUCH_INERTIA = 6;
 const MOBILE_SNAP = false;
 const CAM_NEAR_CFG = 0.1;
+const MOBILE_LIGHTS = 6;
 /*@GEN:POSTFX_END*/
 
 /*@GEN:REFLECTION_START*/
@@ -4241,7 +4242,7 @@ class ObjectBoundary extends React.Component {
 function SceneObjects() {
   return (
     <>
-      {OBJECTS.map((obj, i) => (
+      {OBJECTS.map((obj, i) => (obj.type === "light" && LIGHT_KEEP && !LIGHT_KEEP.has(i)) ? null : (
         <ObjectBoundary key={i}>
           <Suspense fallback={null}>
             <SceneObject data={obj} />
@@ -4258,6 +4259,24 @@ OBJECTS.forEach((obj) => {
 });
 
 const IS_MOBILE_VIEW = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(max-width: 768px)").matches;
+const IS_PHONE = IS_TOUCH_DEVICE || IS_MOBILE_VIEW;
+/* Celular: cada luz (aunque esté apagada en esa pose) se calcula en cada píxel. Con muchas luces el teléfono se arrastra, así que se
+   montan solo las MOBILE_LIGHTS más importantes (las más fuertes y las que más poses están prendidas). 0 = todas. */
+const LIGHT_KEEP = (() => {
+  try {
+    if (!IS_PHONE || !(MOBILE_LIGHTS > 0)) return null;
+    const ls = [];
+    OBJECTS.forEach((o, i) => { if (o.type === "light") ls.push(i); });
+    if (ls.length <= MOBILE_LIGHTS) return null;
+    const score = (i) => {
+      const o = OBJECTS[i], kfs = Array.isArray(o.keyframes) ? o.keyframes : [];
+      const on = kfs.length ? kfs.reduce((a, k) => a + Math.max(0, k && k.li != null ? k.li : 1), 0) : 1;
+      return (o.lightIntensity ?? 80) * on;
+    };
+    ls.sort((a, b) => score(b) - score(a));
+    return new Set(ls.slice(0, MOBILE_LIGHTS));
+  } catch (e) { return null; }
+})();
 /* Nivel de rendimiento (se ajusta solo): 2 = completo (escritorio) · 1 = celular/medio (sin AO, sin sombras ni sombra de contacto,
    reflejo del piso chico, sin cámara de reflejo) · 0 = mínimo (sin postproceso, sin piso espejo, sin partículas).
    Arranca en 1 en celular y en 2 en escritorio; si los cuadros por segundo caen, baja de a un nivel (nunca vuelve a subir, para no parpadear). */
@@ -4407,14 +4426,14 @@ function Experience({ device }) {
   const charAnchorRef = useRef(null);
   // ?q=0|1|2 en la URL fuerza el nivel de calidad (útil para probar); sin eso arranca solo y baja si hace falta.
   const forcedQ = useMemo(() => { try { const q = new URLSearchParams(window.location.search).get("q"); return q === "0" || q === "1" || q === "2" ? Number(q) : null; } catch (e) { return null; } }, []);
-  const [tier, setTier] = useState(forcedQ != null ? forcedQ : 2);
+  const [tier, setTier] = useState(forcedQ != null ? forcedQ : IS_PHONE ? 1 : 2);   // celular arranca liviano (nivel 1); PC completo (2)
   // ?safe=0..3 fuerza un nivel de seguridad (0 = todo; 1 = sin oclusión; 2 = sin postproceso; 3 = además sin piso espejo). Sirve para diagnosticar.
   const forcedSafe = useMemo(() => { try { const q = new URLSearchParams(window.location.search).get("safe"); return q != null && /^[0-3]$/.test(q) ? Number(q) : null; } catch (e) { return null; } }, []);
   const [safe, setSafe] = useState(forcedSafe != null ? forcedSafe : 0);
-  const autoOn = useMemo(() => { try { return new URLSearchParams(window.location.search).has("auto"); } catch (e) { return false; } }, []);
+  const autoOn = useMemo(() => { try { const q = new URLSearchParams(window.location.search); return q.get("auto") === "0" ? false : (q.has("auto") || IS_PHONE); } catch (e) { return false; } }, []);
   const setDpr = useThree((st) => st.setDpr);
   useEffect(() => {
-    const cap = OFF_FLAGS.dpr ? 1 : tier >= 2 ? 1.5 : 1.25;
+    const cap = OFF_FLAGS.dpr ? 1 : tier >= 2 ? 1.5 : tier === 1 ? (IS_PHONE ? 1 : 1.25) : 0.8;
     setDpr(Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, cap));
   }, [tier, setDpr]);
   const perfValue = useMemo(() => ({ tier, safe, off: OFF_FLAGS }), [tier, safe]);
@@ -7575,7 +7594,7 @@ const SCROLL_SPEED = ${postFx.scrollSpeed ?? 0};
 const SCROLL_MAX_PPS = ${postFx.scrollMaxPps ?? 1.5};
 const SCROLL_SPEED_MOBILE = ${postFx.scrollSpeedMobile ?? 0};
 const TOUCH_INERTIA = ${postFx.touchInertia ?? 6};
-const MOBILE_SNAP = ${postFx.mobileSnap ? "true" : "false"};\nconst CAM_NEAR_CFG = ${Math.min(2, Math.max(0.01, +postFx.camNear || 0.1))};`;
+const MOBILE_SNAP = ${postFx.mobileSnap ? "true" : "false"};\nconst CAM_NEAR_CFG = ${Math.min(2, Math.max(0.01, +postFx.camNear || 0.1))};\nconst MOBILE_LIGHTS = ${Math.max(0, Math.min(40, Math.round(postFx.mobileLights ?? 6)))};`;
 }
 
 /* Genera el bloque de configuración de la estela de brillo, con el
@@ -11014,6 +11033,7 @@ function App() {
                         <Slider label="Límite (poses por segundo, 0 = sin límite)" min={0} max={6} step={0.1} value={postFx.scrollMaxPps ?? 1.5} onChange={(v) => setSc({ scrollMaxPps: v })} />
                         <div style={{ fontSize: 10.5, opacity: 0.65, lineHeight: 1.4, marginTop: 10 }}>Celular (pantalla táctil). No cambia nada en la PC.</div>
                         <Switch label="Una pose por deslizamiento" checked={!!postFx.mobileSnap} onChange={(v) => setSc({ mobileSnap: v })} />
+                        <Slider label="Luces máximas en celular (0 = todas)" min={0} max={20} step={1} value={postFx.mobileLights ?? 6} onChange={(v) => setSc({ mobileLights: v })} />
                         {!postFx.mobileSnap && <Slider label={`Velocidad celular (0 = auto ×${Math.max(1, Math.round((postFx.scrollSpeed > 0 ? postFx.scrollSpeed : autoSpeed) * 0.4 * 2) / 2)})`} min={0} max={15} step={0.5} value={postFx.scrollSpeedMobile ?? 0} onChange={(v) => setSc({ scrollSpeedMobile: v })} />}
                         {!postFx.mobileSnap && <Slider label="Inercia del dedo" min={0} max={20} step={1} value={postFx.touchInertia ?? 6} onChange={(v) => setSc({ touchInertia: v })} />}
                       </Group>
