@@ -364,6 +364,7 @@
   }
 
   /* ---- Botón "volver arriba": vidrio neutro, se ve sobre cualquier fondo ---- */
+  @media (pointer: coarse) { .backtop { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background: var(--bt-bg, rgba(12,12,16,.78)) !important; } }
   .backtop { --bt-size: 46px; position: fixed; z-index: 9; bottom: calc(var(--bt-bottom, 24px) + env(safe-area-inset-bottom));
     width: var(--bt-size); height: var(--bt-size); margin: 0; padding: 0; border-radius: 50%; cursor: pointer; display: grid; place-items: center;
     color: var(--bt-fg, #fff); background: var(--bt-bg, rgba(12,12,16,.5)); border: 1px solid var(--bt-line, rgba(255,255,255,.26));
@@ -5108,12 +5109,14 @@ function BackToTop() {
       if (fillRef.current) fillRef.current.style.strokeDashoffset = String(C * (1 - Math.min(1, Math.max(0, p))));
       el.tabIndex = p > (BACKTOP.showAfter ?? 0.06) ? 0 : -1;
     };
-    const calc = () => upd(window.scrollY / Math.max(1, document.documentElement.scrollHeight - window.innerHeight));
-    calc();
+    let raf = 0;
+    const run = () => { raf = 0; upd(window.scrollY / Math.max(1, document.documentElement.scrollHeight - window.innerHeight)); };
+    const calc = () => { if (!raf) raf = requestAnimationFrame(run); };   // una vez por cuadro, no por cada evento de scroll
+    run();
     window.addEventListener("scroll", calc, { passive: true });
     window.addEventListener("resize", calc);
     el.style.setProperty("--bt-bottom", "24px");
-    return () => { window.removeEventListener("scroll", calc); window.removeEventListener("resize", calc); };
+    return () => { if (raf) cancelAnimationFrame(raf); window.removeEventListener("scroll", calc); window.removeEventListener("resize", calc); };
   }, []);
   const go = () => {
     const l = window.__lenis;
@@ -5843,7 +5846,7 @@ function App() {
             }}
           />
         )}
-        {CURSOR.enabled && <CursorTrail />}
+        {CURSOR.enabled && !IS_TOUCH_DEVICE && <CursorTrail />}
         <SceneText />
         <ProgressIndicator />
         <div className="scroll-hint" aria-hidden="true">
