@@ -1130,7 +1130,8 @@ function useScrollProgress(spacerRef) {
     const compute = () => {
       const el = spacerRef.current;
       if (!el) return;
-      const total = el.offsetHeight - stableVh();
+      const asP = el.parentElement && el.parentElement.classList.contains("ovl-pair") && el === el.parentElement.firstElementChild;   // la sección de abajo se superpone: el 3D sigue fijo 100vh más
+      const total = el.offsetHeight - stableVh() - (asP ? stableVh() : 0);
       const top = el.getBoundingClientRect().top + window.scrollY;   // el tramo 3D puede empezar más abajo (secciones 2D antes)
       window.__wsScrollTotal = total;
       window.__wsScrollTop = top;
@@ -5037,6 +5038,32 @@ function SiteLogo({ cfg, contained }) {
     </div>
   );
 }
+function OvlPair({ mode, shadow, children }) {
+  const ref = useRef(null);
+  React.useLayoutEffect(() => {
+    const w = ref.current;
+    if (!w) return undefined;
+    const P = w.firstElementChild;
+    if (!P || P.classList.contains("ws-3d")) return undefined;
+    const set = () => w.style.setProperty("--oh", P.offsetHeight + "px");
+    set();
+    let ro = null;
+    if (typeof ResizeObserver !== "undefined") { ro = new ResizeObserver(set); ro.observe(P); }
+    window.addEventListener("resize", set);
+    return () => { if (ro) ro.disconnect(); window.removeEventListener("resize", set); };
+  }, []);
+  return <div ref={ref} className="ovl-pair" data-m={mode} style={{ "--osh": String(shadow) }}>{children}</div>;
+}
+/* Superposición ("cortina"): la sección anterior queda fija y la siguiente se desliza por encima. Puro CSS sticky: sin JS por scroll. */
+function ovlFold(nodes, secs) {
+  let acc = null;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const nx = secs[i + 1];
+    if (acc && nx && nx.overlap && nx.overlap !== "none") acc = <OvlPair key={"op-" + secs[i].id} mode={nx.overlap} shadow={nx.overlapShadow == null ? 0.5 : nx.overlapShadow}>{nodes[i]}{acc}</OvlPair>;
+    else acc = <React.Fragment key={"f-" + secs[i].id}>{nodes[i]}{acc}</React.Fragment>;
+  }
+  return acc;
+}
 function BackToTop() {
   const ref = useRef(null);
   const fillRef = useRef(null);
@@ -5592,6 +5619,14 @@ const S2D_CSS = `
 .s2d.is-full{min-height:100svh;display:flex;align-items:center}
 .s2d.is-full>.s2d-in{width:100%}
 .rv-pre [data-rv]{opacity:0}
+.ovl-pair{position:relative}
+.ovl-pair>:first-child:not(.ws-3d){position:sticky;top:min(0px,calc(100lvh - var(--oh,0px)))}
+.pg-frame .ovl-pair>:first-child{top:min(0px,calc(100% - var(--oh,0px)))}
+.ovl-pair>:nth-child(2){position:relative;z-index:2}
+.ovl-pair[data-m="cover"]>:nth-child(2){box-shadow:0 -28px 70px -12px rgba(0,0,0,calc(.7*var(--osh,.5)))}
+.ovl-pair[data-m="cover"]>.s2d:nth-child(2),.ovl-pair[data-m="cover"]>.pg-blk:nth-child(2) .s2d,.ovl-pair[data-m="cover"]>.ovl-pair:nth-child(2)>:first-child{border-radius:26px 26px 0 0}
+.ovl-pair>.ws-3d{height:calc(var(--sl) + 100lvh)!important}
+.ovl-pair>.ws-3d+*{margin-top:-100lvh}
 .s2d-eyebrow{margin:0 0 .9em;font-size:.78rem;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--ac)}
 .s2d-h{margin:0 0 .5em;font-family:var(--font-head,var(--font-display,inherit));font-weight:var(--w-head,700);line-height:1.08;letter-spacing:-.01em;font-size:clamp(1.7rem,5.2cqi,3rem)}
 .sec-hero .s2d-h{font-size:clamp(2.1rem,7.4cqi,4.4rem)}
@@ -5748,8 +5783,8 @@ function App() {
     >
       {LOADER.enabled && <LoaderOverlay cfg={LOADER} />}
       {SECTIONS.some((x) => x.type !== "scene3d") && <style>{S2D_CSS}</style>}
-      {SECTIONS.map((sec) => sec.type === "scene3d" ? (
-        <div key={sec.id} ref={spacerRef} id={sec.anchor || ("sec-" + sec.id)} className="scroll-spacer ws-3d" style={{ height: `${SCROLL_LENGTH_VH}vh` }}>
+      {ovlFold(SECTIONS.map((sec) => sec.type === "scene3d" ? (
+        <div key={sec.id} ref={spacerRef} id={sec.anchor || ("sec-" + sec.id)} className="scroll-spacer ws-3d" style={{ height: `${SCROLL_LENGTH_VH}vh`, "--sl": `${SCROLL_LENGTH_VH}vh` }}>
       <div ref={stageRef} className={`canvas-stage ${ready ? "canvas-stage--ready" : ""}`}>
         <div className="scene-canvas">
           <Canvas
@@ -5785,7 +5820,7 @@ function App() {
         </div>
       </div>
         </div>
-      ) : <Block2D key={sec.id} s={sec} theme={SITE2D} />)}
+      ) : <Block2D key={sec.id} s={sec} theme={SITE2D} />), SECTIONS)}
       {BACKTOP.enabled && <BackToTop />}
       {MENU.logoUrl && <SiteLogo cfg={MENU} />}
       {MENU.enabled && <SiteMenu cfg={MENU} />}
@@ -6310,6 +6345,8 @@ function FadeGroup({ obj, fade, children }) {
 //@@use menuRgba
 //@@use SiteMenu
 //@@use SiteLogo
+//@@use OvlPair
+//@@use ovlFold
 //@@use lerpOrbit
 //@@use useAlphaDepth
 //@@use TexMaterial
@@ -8171,6 +8208,13 @@ function PagesPanel({ sections, setSections, site2d, setSite2d, selSec, setSelSe
         </Group>
       )}
 
+      {sel && sections.findIndex((x) => x.id === sel.id) > 0 && (
+        <Group id="pg-ovl" title="Transición con la sección anterior" defaultOpen={false}>
+          <SelectRow label="Efecto" value={sel.overlap || "none"} onChange={(v) => upd(sel.id, { overlap: v })} options={[["none", "Ninguno (una sección tras otra)"], ["cover", "Cortina: se desliza sobre la anterior (con sombra y bordes redondeados)"], ["flat", "Cortina plana (sin sombra ni bordes)"]]} />
+          {sel.overlap && sel.overlap !== "none" && sel.overlap !== "flat" && <Slider label="Sombra" min={0} max={1} step={0.05} value={sel.overlapShadow == null ? 0.5 : sel.overlapShadow} onChange={(v) => upd(sel.id, { overlapShadow: v })} />}
+          <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.45 }}>La sección anterior queda quieta y esta se desliza por encima (efecto parallax / cortina). Sirve también entre el 3D y el 2D: al salir del 3D la página 2D tapa la escena, y al entrar al 3D desde una página 2D la escena sube encima. Funciona con el scroll nativo, sin trabar el celular.</div>
+        </Group>
+      )}
       <Group id="pg-theme" title="Estilo general del sitio 2D" defaultOpen={false}>
         <ColorRow label="Fondo" value={T.bg} onChange={(v) => setT({ bg: v })} />
         <ColorRow label="Texto" value={T.text} onChange={(v) => setT({ text: v })} />
@@ -8196,13 +8240,13 @@ function PagesPreview({ sections, theme, view, setView, replay, setReplay, selSe
       <div className="pg-scroll">
         <div className={"pg-frame " + view} onClickCapture={(e) => { const a = e.target.closest && e.target.closest("a"); if (a) e.preventDefault(); }}>
           <style>{S2D_CSS}</style>
-          {sections.map((s) => (
+          {ovlFold(sections.map((s) => (
             <div key={s.id} className={"pg-blk" + (s.id === selSec ? " sel" : "")} onClick={() => setSelSec(s.id)}>
               {s.type === "scene3d"
                 ? <div className="s2d-3dph"><span>🎬 ESCENA 3D</span><span>{nStages} poses · {Math.round(totalVh)} vh de scroll</span></div>
                 : <Block2D key={s.id + ":" + replay} s={s} theme={T} />}
             </div>
-          ))}
+          )), sections)}
           {sections.length === 0 && <div className="s2d-3dph">Agregá un bloque desde el panel de la derecha</div>}
         </div>
       </div>
