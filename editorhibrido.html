@@ -862,6 +862,7 @@ const MOBILE_SNAP = false;
 const CAM_NEAR_CFG = 0.1;
 const MOBILE_LIGHTS = 6;
 const MOBILE_SMOOTH_ALL = true;
+const SCROLL_2D_NATIVE = true;
 /*@GEN:POSTFX_END*/
 
 /*@GEN:REFLECTION_START*/
@@ -1073,7 +1074,7 @@ function useScrollTuning() {
     const speed = scrollSpeedEff();
     const HAS3D = SECTIONS.some((x) => x.type === "scene3d");   // sitio solo 2D: velocidad normal (1) e inercia normal del dedo
     if (typeof Lenis === "undefined" || !window.__lenis) return;
-    if ((speed <= 1 || !HAS3D) && !IS_TOUCH_DEVICE) return;   // proyecto corto o solo 2D en PC: queda el comportamiento de siempre
+    if ((speed <= 1 || !HAS3D) && !IS_TOUCH_DEVICE) { gateLenis(); return; }   // proyecto corto o solo 2D en PC: queda el comportamiento de siempre
     try {
       const y = window.scrollY;
       const old = window.__lenis;
@@ -1092,6 +1093,7 @@ function useScrollTuning() {
       });
       window.scrollTo(0, y);
     } catch (e) {}
+    gateLenis();
   }, []);
 }
 
@@ -1119,8 +1121,10 @@ function gateLenis() {
     o.touchMultiplier = tm;
   } else { o.wheelMultiplier = 1; o.touchMultiplier = 1; }
   /* Celular: con MOBILE_SMOOTH_ALL (por defecto) todo el sitio, 2D y 3D, usa el mismo deslizamiento amortiguado de Lenis. Si no, fuera del 3D queda el scroll nativo del teléfono. */
+  /* Páginas 2D: scroll NATIVO del navegador (lo mueve el sistema, no nuestro código = lo más fluido). Lenis solo manda dentro del tramo 3D. */
+  if (l.options) l.options.smoothWheel = pinned || !SCROLL_2D_NATIVE;
   if (IS_TOUCH_DEVICE && l.options) {
-    l.options.syncTouch = MOBILE_SMOOTH_ALL ? true : pinned;
+    l.options.syncTouch = pinned || !SCROLL_2D_NATIVE;
     /* La inercia corta del dedo (pensada para el 3D, donde cada pose es un tramo) deja el 2D "duro": ahí vale la inercia normal. */
     l.options.touchInertiaMultiplier = pinned ? Math.max(0, TOUCH_INERTIA) : 35;
   }
@@ -5363,10 +5367,10 @@ function s2dEase(name) {
 }
 function s2dKeyframes(type) {
   switch (type) {
-    case "up": return [{ opacity: 0, transform: "translateY(46px)" }, { opacity: 1, transform: "none" }];
-    case "down": return [{ opacity: 0, transform: "translateY(-46px)" }, { opacity: 1, transform: "none" }];
-    case "left": return [{ opacity: 0, transform: "translateX(-64px)" }, { opacity: 1, transform: "none" }];
-    case "right": return [{ opacity: 0, transform: "translateX(64px)" }, { opacity: 1, transform: "none" }];
+    case "up": return [{ opacity: 0, transform: "translateY(34px)" }, { opacity: 1, transform: "none" }];
+    case "down": return [{ opacity: 0, transform: "translateY(-34px)" }, { opacity: 1, transform: "none" }];
+    case "left": return [{ opacity: 0, transform: "translateX(-36px)" }, { opacity: 1, transform: "none" }];
+    case "right": return [{ opacity: 0, transform: "translateX(36px)" }, { opacity: 1, transform: "none" }];
     case "zoom": return [{ opacity: 0, transform: "scale(0.88)" }, { opacity: 1, transform: "none" }];
     case "blur": return [{ opacity: 0, filter: "blur(16px)", transform: "scale(1.04)" }, { opacity: 1, filter: "blur(0px)", transform: "none" }];
     case "mask": return [{ opacity: 0, clipPath: "inset(0 0 100% 0)", transform: "translateY(24px)" }, { opacity: 1, clipPath: "inset(0 0 0% 0)", transform: "none" }];
@@ -5374,42 +5378,54 @@ function s2dKeyframes(type) {
   }
 }
 /* Entrada animada: cada elemento marcado con data-rv aparece escalonado cuando la sección entra en pantalla. */
+/* Un solo par de observadores compartidos por TODAS las secciones (en vez de uno por sección). "near" dispara la entrada un poquito ANTES de que la
+   sección se vea (así el trabajo de armar la animación ocurre fuera de pantalla); "far" reinicia la sección recién cuando quedó lejos (más de una
+   pantalla), para que volver a pasar la vuelva a animar sin parpadeos al subir y bajar de a poco. */
+const RV = { near: null, far: null, map: new WeakMap() };
+function rvEnsure() {
+  if (RV.near) return;
+  RV.near = new IntersectionObserver((es) => { es.forEach((e) => { const h = RV.map.get(e.target); if (h && e.isIntersecting) h.show(); }); }, { rootMargin: "0px 0px 14% 0px", threshold: 0 });
+  RV.far = new IntersectionObserver((es) => { es.forEach((e) => { const h = RV.map.get(e.target); if (h && !e.isIntersecting) h.hide(); }); }, { rootMargin: "120% 0px 120% 0px", threshold: 0 });
+}
 function useReveal2D(ref, anim) {
   const a = anim || {};
   const type = a.type || "none";
+  const mode = a.mode === "items" ? "items" : "block";   // "block" (por defecto): todo el bloque entra junto = una sola capa, mucho más liviano
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
     const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (type === "none" || reduce || typeof IntersectionObserver === "undefined" || !el.animate) { el.classList.remove("rv-pre"); return undefined; }
+    if (type === "none" || reduce || typeof IntersectionObserver === "undefined" || !el.animate) { el.classList.remove("rv-pre", "rv-block"); return undefined; }
+    /* Navegadores con animaciones atadas al scroll (CSS puro, en la placa de video, sin JS): la entrada acompaña el scroll en ambos sentidos. */
+    let sd = false;
+    try { sd = !!(window.CSS && CSS.supports && CSS.supports("animation-timeline: view()")); } catch (e) { sd = false; }
+    if (sd) {
+      el.classList.remove("rv-pre", "rv-block");
+      el.classList.add("rv-sd");
+      el.classList.toggle("rv-items", mode === "items");
+      el.style.setProperty("--rv-name", "rv-" + type);
+      if (mode === "items") Array.from(el.querySelectorAll("[data-rv]")).forEach((n, i) => n.style.setProperty("--ri", String(Math.min(i, 10))));
+      return () => { el.classList.remove("rv-sd", "rv-items"); el.style.removeProperty("--rv-name"); };
+    }
+    rvEnsure();
     el.classList.add("rv-pre");
-    const items = Array.from(el.querySelectorAll("[data-rv]"));
+    el.classList.toggle("rv-block", mode === "block");
+    const items = mode === "block" ? Array.from(el.querySelectorAll(":scope > .s2d-in")) : Array.from(el.querySelectorAll("[data-rv]"));
     let shown = false, anims = [];
     const stop = () => { anims.forEach((x) => { try { x.cancel(); } catch (e) { /* nada */ } }); anims = []; };
-    const run = () => {
-      stop();
-      const kf = s2dKeyframes(type), easing = s2dEase(a.ease), dur = Math.max(0.1, a.dur || 0.9) * 1000, st = Math.max(0, a.stagger == null ? 0.09 : a.stagger) * 1000;
-      items.forEach((n, i) => {
-        n.style.willChange = "transform, opacity";
-        try {
-          const an = n.animate(kf, { duration: dur, delay: i * st, easing, fill: "both" });
-          anims.push(an);
-          an.onfinish = () => { try { an.cancel(); } catch (e) { /* nada */ } n.style.willChange = ""; };
-        } catch (e) { /* sin animación */ }
-      });
+    const show = () => {
+      if (shown) return;
+      const kf = s2dKeyframes(type), easing = s2dEase(a.ease), dur = Math.max(0.1, a.dur || 0.9) * 1000;
+      const st = mode === "block" ? 0 : Math.min(Math.max(0, a.stagger == null ? 0.09 : a.stagger) * 1000, 600 / Math.max(1, items.length));
+      items.forEach((n, i) => { try { anims.push(n.animate(kf, { duration: dur, delay: i * st, easing, fill: "both" })); } catch (e) { /* sin animación */ } });
       el.classList.remove("rv-pre");
       shown = true;
     };
-    const reset = () => { stop(); items.forEach((n) => { n.style.willChange = ""; }); el.classList.add("rv-pre"); shown = false; };
-    const io = new IntersectionObserver((es) => {
-      const e = es[es.length - 1];
-      const vh = window.innerHeight || 800;
-      if (e.isIntersecting && !shown && (e.intersectionRatio >= 0.12 || e.intersectionRect.height >= vh * 0.3)) run();
-      else if (!e.isIntersecting && shown) reset();
-    }, { threshold: [0, 0.12, 0.3, 0.6, 1] });
-    io.observe(el);
-    return () => { io.disconnect(); stop(); el.classList.remove("rv-pre"); };
-  }, [type, a.ease, a.dur, a.stagger]);
+    const hide = () => { if (!shown) return; stop(); el.classList.add("rv-pre"); shown = false; };
+    RV.map.set(el, { show, hide });
+    RV.near.observe(el); RV.far.observe(el);
+    return () => { RV.near.unobserve(el); RV.far.unobserve(el); RV.map.delete(el); stop(); el.classList.remove("rv-pre", "rv-block"); };
+  }, [type, mode, a.ease, a.dur, a.stagger]);
 }
 /* Paralaje suave de imágenes (cada imagen con data-px = intensidad). */
 function useParallax2D(ref) {
@@ -5653,7 +5669,20 @@ const S2D_CSS = `
 .s2d-in{position:relative;z-index:1;max-width:var(--max);margin:0 auto;padding:var(--py) clamp(20px,5cqi,48px)}
 .s2d.is-full{min-height:100svh;display:flex;align-items:center}
 .s2d.is-full>.s2d-in{width:100%}
-.rv-pre [data-rv]{opacity:0}
+.rv-pre:not(.rv-block) [data-rv]{opacity:0}
+@keyframes rv-fade{from{opacity:0}to{opacity:1}}
+@keyframes rv-up{from{opacity:0;transform:translateY(34px)}to{opacity:1;transform:none}}
+@keyframes rv-down{from{opacity:0;transform:translateY(-34px)}to{opacity:1;transform:none}}
+@keyframes rv-left{from{opacity:0;transform:translateX(-36px)}to{opacity:1;transform:none}}
+@keyframes rv-right{from{opacity:0;transform:translateX(36px)}to{opacity:1;transform:none}}
+@keyframes rv-zoom{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}
+@keyframes rv-blur{from{opacity:0;filter:blur(10px);transform:scale(1.03)}to{opacity:1;filter:blur(0);transform:none}}
+@keyframes rv-mask{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(20px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}
+@supports (animation-timeline: view()){
+.rv-sd:not(.rv-items)>.s2d-in{animation:var(--rv-name,rv-fade) auto cubic-bezier(.16,1,.3,1) both;animation-timeline:view();animation-range:entry 0% entry 55%}
+.rv-sd.rv-items [data-rv]{animation:var(--rv-name,rv-fade) auto cubic-bezier(.16,1,.3,1) both;animation-timeline:view();animation-range:entry calc(var(--ri,0)*4%) entry calc(45% + var(--ri,0)*4%)}
+}
+.rv-pre.rv-block>.s2d-in{opacity:0}
 .ovl-pair{position:relative}
 .ovl-pair>:first-child:not(.ws-3d){position:sticky;top:min(0px,calc(100lvh - var(--oh,0px)))}
 .pg-frame .ovl-pair>:first-child{top:min(0px,calc(100% - var(--oh,0px)))}
@@ -7609,7 +7638,7 @@ const SCROLL_SPEED = ${postFx.scrollSpeed ?? 0};
 const SCROLL_MAX_PPS = ${postFx.scrollMaxPps ?? 1.5};
 const SCROLL_SPEED_MOBILE = ${postFx.scrollSpeedMobile ?? 0};
 const TOUCH_INERTIA = ${postFx.touchInertia ?? 6};
-const MOBILE_SNAP = ${postFx.mobileSnap ? "true" : "false"};\nconst CAM_NEAR_CFG = ${Math.min(2, Math.max(0.01, +postFx.camNear || 0.1))};\nconst MOBILE_LIGHTS = ${Math.max(0, Math.min(40, Math.round(postFx.mobileLights ?? 6)))};\nconst MOBILE_SMOOTH_ALL = ${postFx.mobileSmoothAll === false ? "false" : "true"};`;
+const MOBILE_SNAP = ${postFx.mobileSnap ? "true" : "false"};\nconst CAM_NEAR_CFG = ${Math.min(2, Math.max(0.01, +postFx.camNear || 0.1))};\nconst MOBILE_LIGHTS = ${Math.max(0, Math.min(40, Math.round(postFx.mobileLights ?? 6)))};\nconst MOBILE_SMOOTH_ALL = ${postFx.mobileSmoothAll === false ? "false" : "true"};\nconst SCROLL_2D_NATIVE = ${postFx.scroll2d === "smooth" ? "false" : "true"};`;
 }
 
 /* Genera el bloque de configuración de la estela de brillo, con el
@@ -8230,7 +8259,8 @@ function PagesPanel({ sections, setSections, site2d, setSite2d, selSec, setSelSe
                   </select>
                 </div>
                 <Slider label="Duración (s)" min={0.2} max={2.5} step={0.05} value={sel.anim.dur || 0.9} onChange={(v) => upd(sel.id, { anim: { ...sel.anim, dur: v } })} />
-                <Slider label="Escalonado (s)" min={0} max={0.4} step={0.01} value={sel.anim.stagger == null ? 0.09 : sel.anim.stagger} onChange={(v) => upd(sel.id, { anim: { ...sel.anim, stagger: v } })} />
+                <SelectRow label="Cómo entra" value={sel.anim.mode === "items" ? "items" : "block"} onChange={(v) => upd(sel.id, { anim: { ...sel.anim, mode: v } })} options={[["block", "Todo el bloque junto (liviano, recomendado)"], ["items", "Elemento por elemento, escalonado (más pesado)"]]} />
+                {sel.anim.mode === "items" && <Slider label="Escalonado (s)" min={0} max={0.4} step={0.01} value={sel.anim.stagger == null ? 0.09 : sel.anim.stagger} onChange={(v) => upd(sel.id, { anim: { ...sel.anim, stagger: v } })} />}
               </>
             )}
             <div style={{ fontSize: 10.5, opacity: 0.6, lineHeight: 1.4 }}>Cada elemento del bloque (título, texto, botones, tarjetas, fotos) entra uno tras otro cuando aparece en pantalla. Usa las mismas curvas de tiempo que las poses del 3D. En la vista previa, el botón "Repetir animaciones" la reproduce de nuevo.</div>
@@ -11048,7 +11078,7 @@ function App() {
                         <Slider label="Límite (poses por segundo, 0 = sin límite)" min={0} max={6} step={0.1} value={postFx.scrollMaxPps ?? 1.5} onChange={(v) => setSc({ scrollMaxPps: v })} />
                         <div style={{ fontSize: 10.5, opacity: 0.65, lineHeight: 1.4, marginTop: 10 }}>Celular (pantalla táctil). No cambia nada en la PC.</div>
                         <Switch label="Una pose por deslizamiento" checked={!!postFx.mobileSnap} onChange={(v) => setSc({ mobileSnap: v })} />
-                        <Switch label="Scroll amortiguado también en el 2D (misma sensación en todo el sitio)" checked={postFx.mobileSmoothAll !== false} onChange={(v) => setSc({ mobileSmoothAll: v })} />
+                        <SelectRow label="Scroll en las páginas 2D" value={postFx.scroll2d === "smooth" ? "smooth" : "native"} onChange={(v) => setSc({ scroll2d: v })} options={[["native", "Nativo del navegador (máxima fluidez, recomendado)"], ["smooth", "Amortiguado (como el 3D, más pesado)"]]} />
                         <Slider label="Luces máximas en celular (0 = todas)" min={0} max={20} step={1} value={postFx.mobileLights ?? 6} onChange={(v) => setSc({ mobileLights: v })} />
                         {!postFx.mobileSnap && <Slider label={`Velocidad celular (0 = auto ×${Math.max(1, Math.round((postFx.scrollSpeed > 0 ? postFx.scrollSpeed : autoSpeed) * 0.4 * 2) / 2)})`} min={0} max={15} step={0.5} value={postFx.scrollSpeedMobile ?? 0} onChange={(v) => setSc({ scrollSpeedMobile: v })} />}
                         {!postFx.mobileSnap && <Slider label="Inercia del dedo" min={0} max={20} step={1} value={postFx.touchInertia ?? 6} onChange={(v) => setSc({ touchInertia: v })} />}
