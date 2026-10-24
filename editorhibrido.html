@@ -5093,13 +5093,20 @@ function OvlPair({ mode, shadow, children }) {
 }
 /* Superposición ("cortina"): la sección anterior queda fija y la siguiente se desliza por encima. Puro CSS sticky: sin JS por scroll. */
 function ovlFold(nodes, secs) {
-  let acc = null;
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const nx = secs[i + 1];
-    if (acc && nx && nx.overlap && nx.overlap !== "none") acc = <OvlPair key={"op-" + secs[i].id} mode={nx.overlap} shadow={nx.overlapShadow == null ? 0.5 : nx.overlapShadow}>{nodes[i]}{acc}</OvlPair>;
-    else acc = <React.Fragment key={"f-" + secs[i].id}>{nodes[i]}{acc}</React.Fragment>;
-  }
-  return acc;
+  /* Cada cadena de secciones superpuestas se anida SOLO entre sí; las que siguen quedan como hermanas (si no, la sección "pegada" duraba toda la página) */
+  const chains = [];
+  nodes.forEach((n, i) => {
+    const ov = i > 0 && secs[i].overlap && secs[i].overlap !== "none";
+    if (ov && chains.length) chains[chains.length - 1].push(i); else chains.push([i]);
+  });
+  return chains.map((ch) => {
+    let acc = nodes[ch[ch.length - 1]];
+    for (let j = ch.length - 2; j >= 0; j--) {
+      const nx = secs[ch[j + 1]];
+      acc = <OvlPair key={"op-" + secs[ch[j]].id} mode={nx.overlap} shadow={nx.overlapShadow == null ? 0.5 : nx.overlapShadow}>{nodes[ch[j]]}{acc}</OvlPair>;
+    }
+    return <React.Fragment key={"f-" + secs[ch[0]].id}>{acc}</React.Fragment>;
+  });
 }
 function BackToTop() {
   const ref = useRef(null);
@@ -5689,8 +5696,8 @@ const S2D_CSS = `
 .ovl-pair>:nth-child(2){position:relative;z-index:2}
 .ovl-pair[data-m="cover"]>:nth-child(2){box-shadow:0 -28px 70px -12px rgba(0,0,0,calc(.7*var(--osh,.5)))}
 .ovl-pair[data-m="cover"]>.s2d:nth-child(2),.ovl-pair[data-m="cover"]>.pg-blk:nth-child(2) .s2d,.ovl-pair[data-m="cover"]>.ovl-pair:nth-child(2)>:first-child{border-radius:26px 26px 0 0}
-.ovl-pair>.ws-3d{height:calc(var(--sl) + 100lvh)!important}
-.ovl-pair>.ws-3d+*{margin-top:-100lvh}
+.ovl-pair>.ws-3d:first-child{height:calc(var(--sl) + 100lvh)!important}
+.ovl-pair>.ws-3d:first-child+*{margin-top:-100lvh}
 .s2d-eyebrow{margin:0 0 .9em;font-size:.78rem;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--ac)}
 .s2d-h{margin:0 0 .5em;font-family:var(--font-head,var(--font-display,inherit));font-weight:var(--w-head,700);line-height:1.08;letter-spacing:-.01em;font-size:clamp(1.7rem,5.2cqi,3rem)}
 .sec-hero .s2d-h{font-size:clamp(2.1rem,7.4cqi,4.4rem)}
